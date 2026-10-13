@@ -34,13 +34,26 @@ jobs:
         run: npm ci
       - if: steps.check.outputs.skip == 'false'
         run: npm test
-      - name: 建立版本標籤
+      # 先建立草稿 Release，再讓 electron-builder 上傳到這個草稿，最後才公開；
+      # 避免同時上傳多個檔案時各自建出重複的 Release
+      - name: 建立草稿 Release
         if: steps.check.outputs.skip == 'false'
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VER=$(node -p "require('./package.json').version")
-          if ! git ls-remote --exit-code --tags origin "v$VER" >/dev/null; then git tag "v$VER" && git push origin "v$VER"; fi
+          gh release create "v$VER" --draft --title "v$VER" --notes "額度監控器 $VER" --target "$GITHUB_SHA"
       - if: steps.check.outputs.skip == 'false'
         run: npx electron-builder --win nsis --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: 公開 Release
+        if: steps.check.outputs.skip == 'false'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VER=$(node -p "require('./package.json').version")
+          gh release view "v$VER" --json assets -q '.assets[].name'
+          gh release edit "v$VER" --draft=false --latest
