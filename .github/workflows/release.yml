@@ -23,7 +23,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VER=$(node -p "require('./package.json').version")
-          if gh release view "v$VER" >/dev/null 2>&1; then echo "skip=true" >> "$GITHUB_OUTPUT"; else echo "skip=false" >> "$GITHUB_OUTPUT"; fi
+          # 安裝檔已經在 Release 裡才算發布過；只有半套的 Release 會重新上傳
+          if gh release view "v$VER" --json assets -q '.assets[].name' 2>/dev/null | grep -q '^QuotaMonitor-Setup-.*\.exe$'; then echo "skip=true" >> "$GITHUB_OUTPUT"; else echo "skip=false" >> "$GITHUB_OUTPUT"; fi
       - uses: actions/setup-node@v4
         if: steps.check.outputs.skip == 'false'
         with:
@@ -38,7 +39,7 @@ jobs:
         shell: bash
         run: |
           VER=$(node -p "require('./package.json').version")
-          git tag "v$VER" && git push origin "v$VER"
+          if ! git ls-remote --exit-code --tags origin "v$VER" >/dev/null; then git tag "v$VER" && git push origin "v$VER"; fi
       - if: steps.check.outputs.skip == 'false'
         run: npx electron-builder --win nsis --publish always
         env:
