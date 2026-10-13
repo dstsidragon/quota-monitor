@@ -34,7 +34,8 @@
       {
         "provider": "github",
         "owner": "dstsidragon",
-        "repo": "quota-monitor"
+        "repo": "quota-monitor",
+        "releaseType": "release"
       }
     ]
   },

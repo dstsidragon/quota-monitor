@@ -1,9 +1,12 @@
 name: Release
 
-# 推送 v* 標籤時在 Windows 上打包並發布到 GitHub Releases，小工具會從這裡自動更新
+# main 上的 package.json 版本號變了，就在 Windows 上打包並發布到 GitHub Releases；
+# 已安裝的小工具會從這裡自動更新。同一個版本已發布過就跳過。
 on:
   push:
-    tags: ['v*']
+    branches: [main]
+    paths: [package.json]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -13,12 +16,24 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - name: 檢查這個版本是否已發布
+        id: check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VER=$(node -p "require('./package.json').version")
+          if gh release view "v$VER" >/dev/null 2>&1; then echo "skip=true" >> "$GITHUB_OUTPUT"; else echo "skip=false" >> "$GITHUB_OUTPUT"; fi
       - uses: actions/setup-node@v4
+        if: steps.check.outputs.skip == 'false'
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
-      - run: npm test
-      - run: npx electron-builder --win nsis --publish always
+      - if: steps.check.outputs.skip == 'false'
+        run: npm ci
+      - if: steps.check.outputs.skip == 'false'
+        run: npm test
+      - if: steps.check.outputs.skip == 'false'
+        run: npx electron-builder --win nsis --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

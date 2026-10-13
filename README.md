@@ -38,5 +38,5 @@ npm start          # 開發模式執行
 npm test           # 解析器與抓取邏輯測試
 npm run dist       # 在 Windows 上打包安裝檔
 
-發布新版：改 package.json 的 version，推上 main，再推 `v版本號` 標籤；GitHub Actions 會在 Windows 上打包並發布到 Releases，已安裝的小工具會自動更新。
+發布新版：改 package.json 的 version，推上 main，GitHub Actions 會在 Windows 上打包並發布到 Releases，已安裝的小工具會自動更新。
 ```
