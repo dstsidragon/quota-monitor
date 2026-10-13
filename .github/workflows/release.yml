@@ -5,7 +5,7 @@ name: Release
 on:
   push:
     branches: [main]
-    paths: [package.json]
+    paths: [package.json, .github/workflows/release.yml]
   workflow_dispatch:
 
 permissions:
@@ -33,6 +33,12 @@ jobs:
         run: npm ci
       - if: steps.check.outputs.skip == 'false'
         run: npm test
+      - name: 建立版本標籤
+        if: steps.check.outputs.skip == 'false'
+        shell: bash
+        run: |
+          VER=$(node -p "require('./package.json').version")
+          git tag "v$VER" && git push origin "v$VER"
       - if: steps.check.outputs.skip == 'false'
         run: npx electron-builder --win nsis --publish always
         env:
