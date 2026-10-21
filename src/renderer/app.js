@@ -111,9 +111,33 @@ function compactProvider(name, cls, s) {
   return `<span class="prov"><span class="who"><span class="dot ${cls}"></span><span class="name">${name}</span></span>${body}</span>`;
 }
 
+// tibo 24 小時內的 reset 公告，在極簡列上顯示提示；點開過就不再閃
+const TIBO_HINT_MS = 24 * 3600 * 1000;
+function seenTibo() {
+  try { return localStorage.getItem('seenTibo'); } catch { return null; }
+}
+function latestTibo() {
+  const items = (current.news && current.news.items) || [];
+  const i = items.find((x) => x.isReset && /thsottiaux/.test(x.source));
+  return i && i.at && Date.now() - new Date(i.at) < TIBO_HINT_MS ? i : null;
+}
+function shortAgo(iso) {
+  const m = Math.max(0, Math.round((Date.now() - new Date(iso)) / 60000));
+  if (m < 1) return '剛剛';
+  if (m < 60) return `${m}m前`;
+  return `${Math.floor(m / 60)}h前`;
+}
+function tiboHint() {
+  const i = latestTibo();
+  if (!i) return '';
+  const fresh = seenTibo() !== (i.id || i.url);
+  const tip = `tibo ${fmtTime(i.at)} 宣布 Codex 額度 reset${i.kind ? `（${i.kind}）` : ''}\n${i.title}\n\n點一下打開貼文`;
+  return `<span class="tibo${fresh ? ' new' : ''}" data-url="${esc(i.url)}" data-id="${esc(i.id || i.url)}" title="${esc(tip)}"><i></i>tibo reset ${shortAgo(i.at)}</span>`;
+}
+
 function renderCompact() {
   const line = $('#compact-line');
-  line.innerHTML = compactProvider('Claude', 'claude', current.claude) + '<span class="sep"></span>' + compactProvider('Codex', 'codex', current.codex);
+  line.innerHTML = compactProvider('Claude', 'claude', current.claude) + '<span class="sep"></span>' + compactProvider('Codex', 'codex', current.codex) + tiboHint();
   line.querySelectorAll('b[data-left]').forEach((el) => { el.style.color = barColor(Number(el.dataset.left)); });
   const tip = [];
   for (const [n, s] of [['Claude', current.claude], ['Codex', current.codex]]) {
@@ -129,8 +153,8 @@ let lastFit = 0;
 function fitCompact() {
   const line = $('#compact-line');
   const need = Math.ceil([...line.children].reduce((w, el) => w + el.getBoundingClientRect().width, 0)
-    + 16 * (line.children.length - 1) + $('#view-compact .actions').getBoundingClientRect().width + 30);
-  if (Math.abs(need - lastFit) > 4) { lastFit = need; window.quota.fitCompact(need); }
+    + 16 * (line.children.length - 1) + $('#view-compact .actions').getBoundingClientRect().width + 34); // 30 是左右內距與間距，再加上 body 的邊框
+  if (Math.abs(need - lastFit) > 1) { lastFit = need; window.quota.fitCompact(need); }
 }
 
 function renderNews() {
@@ -166,7 +190,9 @@ function render() {
   renderCompact();
 }
 
-if (new URLSearchParams(location.search).get('glass') === '1') document.body.classList.add('glass');
+// glass=clear 完全透明、glass=blur 毛玻璃模糊（Windows 11）
+const glass = new URLSearchParams(location.search).get('glass');
+if (glass === 'clear' || glass === 'blur') document.body.classList.add('glass', glass);
 
 // 毛玻璃：平常幾乎全透明，滑鼠移上去才變不透明（離開後稍等一下再變回去，避免閃爍）
 let look = { restOpacity: 0, hoverSolid: true };
@@ -208,6 +234,13 @@ window.quota.getSettings().then((s) => {
   applyLook({ restOpacity: s.restOpacity ?? 0, hoverSolid: s.hoverSolid !== false });
 });
 
+$('#compact-line').addEventListener('click', (e) => {
+  const hint = e.target.closest('.tibo');
+  if (!hint) return;
+  try { localStorage.setItem('seenTibo', hint.dataset.id); } catch { /* 存不了就下次繼續閃 */ }
+  hint.classList.remove('new');
+  window.quota.openUrl(hint.dataset.url);
+});
 $('#news-list').addEventListener('click', (e) => {
   const li = e.target.closest('li[data-url]');
   if (li && li.dataset.url) window.quota.openUrl(li.dataset.url);
@@ -228,6 +261,8 @@ async function openSettings() {
   $('#s-news').value = s.newsMinutes;
   $('#s-top').checked = s.alwaysOnTop;
   $('#s-theme').value = s.theme || 'system';
+  $('#s-glass-row').hidden = !s.blurAvailable;
+  $('#s-glass').value = s.glass === 'blur' ? 'blur' : 'clear';
   $('#s-version').textContent = `版本 ${s.version}，有新版會自動下載。`;
   $('#s-login').checked = s.openAtLogin;
   $('#s-notify').checked = s.notify;
@@ -271,6 +306,7 @@ $('#s-save').addEventListener('click', async () => {
     hoverSolid: $('#s-hover').checked,
     lowPercent: Number($('#s-low').value),
   };
+  if (!$('#s-glass-row').hidden) patch.glass = $('#s-glass').value;
   const token = $('#s-xtoken').value.trim();
   if (token) patch.xToken = token;
   await window.quota.saveSettings(patch);

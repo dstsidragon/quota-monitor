@@ -1,7 +1,7 @@
 {
   "name": "quota-monitor",
   "productName": "額度監控器",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "顯示 Claude Code 與 Codex 剩餘額度、reset 時間與相關公告的桌面小工具",
   "main": "src/main.js",
   "scripts": {

@@ -60,10 +60,13 @@
     <h2>設定</h2>
     <label>額度更新間隔（分鐘）<input type="number" id="s-usage" min="2"></label>
     <label>公告更新間隔（分鐘）<input type="number" id="s-news" min="5"></label>
-    <label>外觀（毛玻璃文字顏色）
+    <label id="s-glass-row">背景
+      <select id="s-glass"><option value="clear">完全透明（直接看到桌面）</option><option value="blur">毛玻璃模糊</option></select>
+    </label>
+    <label>文字顏色
       <select id="s-theme"><option value="system">跟隨 Windows</option><option value="light">淺色（深色文字）</option><option value="dark">深色（白色文字）</option></select>
     </label>
-    <label>平常的底色濃度 <span id="s-rest-v"></span>（0% 最透明）
+    <label>平常的底色濃度 <span id="s-rest-v"></span>（0% 完全透明）
       <input type="range" id="s-rest" min="0" max="60" step="5">
     </label>
     <label class="check"><input type="checkbox" id="s-hover"> 滑鼠移上去時變不透明</label>

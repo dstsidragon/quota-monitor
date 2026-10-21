@@ -42,10 +42,12 @@ const DEFAULT_SETTINGS = {
   restOpacity: 0, // 平常（滑鼠不在上面）時鋪在毛玻璃上的底色濃度，0–60%
   hoverSolid: true, // 滑鼠移上去時變不透明
   lowPercent: 10, // 剩餘低於這個百分比時通知，0 表示不通知
+  glass: 'clear', // 背景：'clear' 完全透明（直接看到桌面）、'blur' 毛玻璃模糊（Windows 11）
 };
 const TIBO_MS = 60 * 1000; // tibo 的 reset 貼文每分鐘檢查一次
-// Windows 11 22H2（build 22621）以上才有 acrylic 毛玻璃，舊版維持不透明背景
+// Windows 11 22H2（build 22621）以上才有 acrylic 毛玻璃模糊；完全透明則每個版本都能用
 const GLASS = process.platform === 'win32' && Number(os.release().split('.')[2]) >= 22621;
+const glassStyle = () => (settings.glass === 'blur' && GLASS ? 'blur' : 'clear');
 const COMPACT = { width: 560, height: 42 };
 const NORMAL = { width: 380, height: 600 };
 
@@ -335,13 +337,14 @@ function refreshAll() {
 
 // ---------- 視窗與系統匣 ----------
 
-function createWindow() {
+function createWindow(bounds) {
   const { workArea } = screen.getPrimaryDisplay();
   const size = settings.compact ? COMPACT : NORMAL;
   // 回到上次的位置；沒有紀錄就放右下角。都會夾在螢幕範圍內（螢幕配置可能變過）
-  const start = settings.pos
+  const start = bounds || (settings.pos
     ? placeBounds({ ...settings.pos, ...size }, size)
-    : { x: workArea.x + workArea.width - size.width - 16, y: workArea.y + workArea.height - size.height - 16, ...size };
+    : { x: workArea.x + workArea.width - size.width - 16, y: workArea.y + workArea.height - size.height - 16, ...size });
+  const style = glassStyle();
   win = new BrowserWindow({
     ...start,
     frame: false,
@@ -352,12 +355,14 @@ function createWindow() {
     maximizable: false,
     fullscreenable: false,
     alwaysOnTop: settings.alwaysOnTop,
-    ...(GLASS ? { backgroundMaterial: 'acrylic', backgroundColor: '#00000000' } : { backgroundColor: '#14161a' }),
+    // 完全透明要在建立視窗時決定（之後改不了），換樣式時會重建視窗
+    ...(style === 'blur' ? { backgroundMaterial: 'acrylic' } : { transparent: true }),
+    backgroundColor: '#00000000',
     icon: path.join(__dirname, 'icon-256.png'),
     show: false,
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
   });
-  win.loadFile(path.join(__dirname, 'renderer', 'index.html'), { query: { glass: GLASS ? '1' : '0' } });
+  win.loadFile(path.join(__dirname, 'renderer', 'index.html'), { query: { glass: style } });
   let moveTimer;
   win.on('moved', () => {
     clearTimeout(moveTimer);
@@ -368,6 +373,19 @@ function createWindow() {
     if (!app.isQuitting) { e.preventDefault(); win.hide(); }
   });
   win.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
+}
+
+function setGlass(style) {
+  if (!['clear', 'blur'].includes(style) || settings.glass === style) return;
+  settings.glass = style;
+  saveSettings();
+  const old = win;
+  const b = old.getBounds();
+  settings.pos = { x: b.x, y: b.y };
+  hovering = false;
+  createWindow(b);
+  old.destroy();
+  buildTrayMenu();
 }
 
 // 毛玻璃「滑過才不透明」：拖曳區不會觸發網頁的 :hover，所以由主程式看游標在不在視窗上
@@ -410,6 +428,10 @@ function buildTrayMenu() {
     { label: '顯示／隱藏', click: toggleWindow },
     { label: '立即更新', click: refreshAll },
     { label: '極簡模式', type: 'checkbox', checked: settings.compact, click: (i) => setCompact(i.checked) },
+    ...(GLASS ? [{ label: '背景', submenu: [
+      { label: '完全透明', type: 'radio', checked: glassStyle() === 'clear', click: () => setGlass('clear') },
+      { label: '毛玻璃模糊', type: 'radio', checked: glassStyle() === 'blur', click: () => setGlass('blur') },
+    ] }] : []),
     ...(updateReady ? [{ label: `重新啟動並更新到 ${updateReady}`, click: installUpdate }] : []),
     { type: 'separator' },
     { label: `版本 ${app.getVersion()}`, enabled: false },
@@ -471,7 +493,7 @@ ipcMain.handle('fit-compact', (_e, width) => {
 });
 ipcMain.handle('claude-login', () => openClaudeLogin());
 ipcMain.handle('claude-logout', () => logoutClaudeWeb());
-ipcMain.handle('get-settings', () => ({ ...publicSettings(), version: app.getVersion(), updateReady }));
+ipcMain.handle('get-settings', () => ({ ...publicSettings(), version: app.getVersion(), updateReady, blurAvailable: GLASS }));
 ipcMain.handle('install-update', () => installUpdate());
 ipcMain.handle('refresh', () => refreshAll());
 ipcMain.handle('hide', () => win.hide());
@@ -492,6 +514,8 @@ ipcMain.handle('save-settings', (_e, patch) => {
   win.setAlwaysOnTop(settings.alwaysOnTop);
   app.setLoginItemSettings({ openAtLogin: settings.openAtLogin });
   refreshAll();
+  // 換背景樣式要重建視窗，等這次 IPC 回覆後再做
+  if ('glass' in patch) setImmediate(() => setGlass(patch.glass));
   return publicSettings();
 });
 

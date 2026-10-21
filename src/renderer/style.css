@@ -93,61 +93,81 @@ body.compact #view-compact { display: flex; }
 .compact-line .err { color: var(--warn); }
 #view-compact .actions button { padding: 1px 7px; font-size: 11px; }
 
-/* 毛玻璃（仿 Apple 新的 Liquid Glass）：
-   平常只剩 Windows acrylic 的模糊，幾乎全透明；滑鼠移上去才鋪上不透明底色。
-   文字顏色跟著系統深淺色切換，平常靠文字陰影在任何桌布上都看得清楚。 */
+/* 透明背景（body.glass）：clear 完全透明、直接看到桌面；blur 是 Windows 11 的 acrylic 模糊。
+   平常不鋪底色，滑鼠移上去才變不透明。文字一律不透明、顏色維持飽和，
+   靠一圈細描邊（像字幕）在任何桌布上都看得清楚，不用半透明的灰色文字。 */
+html { background-image: linear-gradient(transparent, transparent); } /* 讓 body 的底色不要鋪滿整個畫布，圓角才有效 */
 body.glass {
   --veil-rgb: 18, 19, 24;
   --veil-a: 0;
-  --solid-a: 0.9;
-  --panel: rgba(255, 255, 255, 0.05);
+  --solid-a: 0.92;
+  --panel: transparent;
   --panel-solid: rgba(255, 255, 255, 0.07);
-  --line: rgba(255, 255, 255, 0.18);
+  --line: rgba(255, 255, 255, 0.3);
   --text: #ffffff;
-  --muted: rgba(255, 255, 255, 0.82);
-  --ok: #6ff09a;
-  --warn: #ffc94d;
-  --bad: #ff7088;
+  --muted: #e8ebf0;
+  --ok: #3df07c;
+  --warn: #ffc02e;
+  --bad: #ff5573;
+  --claude: #ff8a5b;
+  --codex: #76a7ff;
+  --halo: rgba(0, 0, 0, 0.95);
+  --track: rgba(255, 255, 255, 0.3);
+  --btn: rgba(255, 255, 255, 0.12);
   background: rgba(var(--veil-rgb), var(--veil-a));
-  border-color: rgba(255, 255, 255, 0.28);
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7), 0 0 1px rgba(0, 0, 0, 0.6);
-  transition: background-color 0.25s ease;
+  border-color: transparent;
+  border-radius: 10px;
+  text-shadow: 0 0 1px var(--halo), 0 0 1px var(--halo), 0 1px 2px var(--halo);
+  transition: background-color 0.25s ease, border-color 0.25s ease;
 }
-body.glass .card { background: var(--panel); border-color: rgba(255, 255, 255, 0.14); transition: background-color 0.25s ease; }
-body.glass header { border-bottom-color: rgba(255, 255, 255, 0.12); }
-body.glass button { background: rgba(255, 255, 255, 0.10); border-color: rgba(255, 255, 255, 0.25); }
-body.glass .bar { background: rgba(255, 255, 255, 0.22); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35); }
-body.glass #news-list .tag { background: rgba(255, 196, 85, 0.25); text-shadow: none; }
+body.glass header { border-bottom-color: var(--line); }
+body.glass .card { background: var(--panel); border-color: var(--line); transition: background-color 0.25s ease; }
+body.glass button { background: transparent; border-color: var(--line); }
+body.glass .bar { background: var(--track); box-shadow: 0 0 0 1px var(--halo); }
+body.glass .dot { box-shadow: 0 0 0 1px var(--halo); }
+body.glass .compact-line .sep { box-shadow: 1px 0 0 var(--halo); }
+body.glass .compact-line .w small { opacity: 1; }
+body.glass #news-list .tag { background: transparent; border: 1px solid currentColor; }
 
-/* 滑鼠在視窗上：變不透明，文字不再需要陰影 */
+/* 滑鼠在視窗上：變不透明，文字不再需要描邊 */
 body.glass.solid-on-hover.hover:not(.previewing) {
   background: rgba(var(--veil-rgb), var(--solid-a));
+  border-color: var(--line);
   text-shadow: none;
 }
 body.glass.solid-on-hover.hover:not(.previewing) .card { background: var(--panel-solid); }
+body.glass.solid-on-hover.hover:not(.previewing) button { background: var(--btn); }
+body.glass.solid-on-hover.hover:not(.previewing) :is(.bar, .dot) { box-shadow: none; }
+body.glass.solid-on-hover.hover:not(.previewing) .compact-line .sep { box-shadow: none; }
 
 @media (prefers-color-scheme: light) {
   body.glass {
     --veil-rgb: 246, 247, 250;
-    --panel: rgba(255, 255, 255, 0.10);
-    --panel-solid: rgba(255, 255, 255, 0.75);
-    --line: rgba(0, 0, 0, 0.12);
-    --text: #0b0d12;
-    --muted: rgba(0, 0, 0, 0.70);
-    --ok: #0e7a35;
-    --warn: #a85400;
-    --bad: #c41a36;
-    --codex: #2a58c8;
-    --claude: #bf4c28;
-    border-color: rgba(255, 255, 255, 0.6);
-    text-shadow: 0 0 2px rgba(255, 255, 255, 0.95), 0 0 6px rgba(255, 255, 255, 0.7);
+    --panel-solid: rgba(255, 255, 255, 0.8);
+    --line: rgba(0, 0, 0, 0.2);
+    --text: #0a0c10;
+    --muted: #252a32;
+    --ok: #00a83f;
+    --warn: #f07400;
+    --bad: #ec173f;
+    --claude: #e2531f;
+    --codex: #1e62f0;
+    --halo: rgba(255, 255, 255, 0.95);
+    --track: rgba(0, 0, 0, 0.16);
+    --btn: rgba(0, 0, 0, 0.05);
   }
-  body.glass .card { border-color: rgba(255, 255, 255, 0.5); }
-  body.glass header { border-bottom-color: rgba(0, 0, 0, 0.08); }
-  body.glass button { background: rgba(255, 255, 255, 0.35); border-color: rgba(0, 0, 0, 0.12); }
-  body.glass .bar { background: rgba(0, 0, 0, 0.12); box-shadow: none; }
-  body.glass #news-list .tag { background: rgba(168, 84, 0, 0.14); }
 }
+
+/* 極簡模式的 tibo reset 提示：24 小時內有 reset 公告就顯示，沒點開過會閃 */
+.compact-line .tibo {
+  flex: none; -webkit-app-region: no-drag; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 1px 8px; border: 1px solid currentColor; border-radius: 999px;
+  color: var(--warn); font-size: 12px; font-weight: 700;
+}
+.compact-line .tibo i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.compact-line .tibo.new i { animation: tibo-pulse 1.2s ease-in-out infinite; }
+@keyframes tibo-pulse { 50% { transform: scale(0.45); } }
 
 #update-bar { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--line); color: var(--ok); }
 #update-bar span { flex: 1; }
