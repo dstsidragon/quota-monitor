@@ -4,7 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { parseClaudeUsage, parseCodexUsage, parseSessionRateLimits, fetchClaude, fetchCodex } = require('../src/providers');
-const { parseRss, parseTokenusage, fetchNews } = require('../src/news');
+const { parseRss, parseTokenusage, parseOembedText, fetchTibo, fetchStatusFeeds, fetchTweetText, mergeNews } = require('../src/news');
 
 test('Claude 舊版扁平格式', () => {
   const w = parseClaudeUsage({
@@ -101,13 +101,32 @@ test('RSS 與 tokenusage 解析、合併排序', async () => {
   const tu = parseTokenusage({ resets: [{ postId: '1', url: 'https://x.com/i/status/1', postedAt: '2026-10-10T22:16:20.000Z', resetType: 'automatic' }] });
   assert.strictEqual(tu[0].isReset, true);
 
-  const news = await fetchNews(async (url) => {
-    if (url.includes('tokenusage')) return res(200, { resets: [{ postId: '1', url: 'https://x.com/i/status/1', postedAt: '2026-10-11T00:00:00Z', resetType: 'banked' }] });
+  const fake = async (url) => {
+    if (url.includes('tokenusage')) return res(200, { lastPolledAt: '2026-10-11T00:00:30Z', resets: [{ postId: '1', url: 'https://x.com/i/status/1', postedAt: '2026-10-11T00:00:00Z', resetType: 'banked' }] });
     if (url.includes('claude')) return res(500, '');
     return res(200, rss);
-  });
-  assert.strictEqual(news.items[0].source, '@thsottiaux（tibo）');
-  assert.strictEqual(news.errors.length, 1);
+  };
+  const tibo = await fetchTibo(fake);
+  assert.strictEqual(tibo.lastPolledAt, '2026-10-11T00:00:30Z');
+  assert.strictEqual(tibo.items[0].kind, '可存用');
+  assert.strictEqual(tibo.items[0].postId, '1');
+  const status = await fetchStatusFeeds(fake);
+  assert.strictEqual(status.errors.length, 1);
+  const merged = mergeNews([tibo.items, [{ ...tibo.items[0], title: '重複的' }], status.items]);
+  assert.strictEqual(merged[0].source, '@thsottiaux（tibo）');
+  assert.strictEqual(merged.filter((i) => i.id === 'x:1').length, 1);
+});
+
+test('oEmbed 取貼文內文', async () => {
+  const html = '<blockquote class="twitter-tweet" data-dnt="true"><p lang="en" dir="ltr">We&#39;re resetting Codex rate limits for everyone &amp; enjoy!<br>More soon <a href="https://t.co/abc">https://t.co/abc</a></p>&mdash; Tibo (@thsottiaux) <a href="https://twitter.com/thsottiaux/status/1">October 20, 2026</a></blockquote>';
+  assert.strictEqual(parseOembedText(html), "We're resetting Codex rate limits for everyone & enjoy!\nMore soon");
+  assert.strictEqual(parseOembedText(''), null);
+  let seen;
+  const text = await fetchTweetText(async (url) => { seen = url; return res(200, { html }); }, '123');
+  assert.match(seen, /^https:\/\/publish\.twitter\.com\/oembed\?/);
+  assert.match(decodeURIComponent(seen), /status\/123/);
+  assert.match(text, /^We're resetting/);
+  assert.strictEqual(await fetchTweetText(async () => res(404, {}), '1'), null);
 });
 
 test('fetchClaudeWeb 選有 chat 的組織並讀 usage', async () => {

@@ -59,9 +59,10 @@ main { flex: 1; overflow-y: auto; padding: 10px 12px 14px; }
 #news-list li:hover .title { text-decoration: underline; }
 #news-list .src { font-size: 11.5px; color: var(--muted); display: flex; gap: 6px; align-items: center; }
 #news-list .tag { font-size: 10.5px; padding: 0 5px; border-radius: 4px; background: #3a2f1c; color: var(--warn); }
-#news-list .title { display: block; margin-top: 1px; }
+#news-list .title { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; margin-top: 1px; white-space: pre-line; }
 
 #view-settings label { display: block; margin: 10px 0; color: var(--muted); }
+#view-settings input[type=range] { display: block; width: 100%; margin-top: 6px; accent-color: var(--codex); }
 #view-settings input[type=number], #view-settings input[type=password], #view-settings select {
   display: block; width: 100%; margin-top: 4px; padding: 6px 8px;
   background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font: inherit;
@@ -92,45 +93,62 @@ body.compact #view-compact { display: flex; }
 .compact-line .err { color: var(--warn); }
 #view-compact .actions button { padding: 1px 7px; font-size: 11px; }
 
-/* 毛玻璃：視窗本身用 Windows acrylic 模糊背景，網頁只鋪很淡的一層，
-   文字顏色跟著系統深淺色切換（像 iOS），確保在任何桌布上都看得清楚 */
+/* 毛玻璃（仿 Apple 新的 Liquid Glass）：
+   平常只剩 Windows acrylic 的模糊，幾乎全透明；滑鼠移上去才鋪上不透明底色。
+   文字顏色跟著系統深淺色切換，平常靠文字陰影在任何桌布上都看得清楚。 */
 body.glass {
-  --panel: rgba(255, 255, 255, 0.08);
-  --line: rgba(255, 255, 255, 0.16);
+  --veil-rgb: 18, 19, 24;
+  --veil-a: 0;
+  --solid-a: 0.9;
+  --panel: rgba(255, 255, 255, 0.05);
+  --panel-solid: rgba(255, 255, 255, 0.07);
+  --line: rgba(255, 255, 255, 0.18);
   --text: #ffffff;
-  --muted: rgba(255, 255, 255, 0.78);
-  --ok: #5ee08a;
-  --warn: #ffc455;
-  --bad: #ff6b81;
-  background: rgba(12, 12, 16, 0.26);
-  border-color: rgba(255, 255, 255, 0.22);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --muted: rgba(255, 255, 255, 0.82);
+  --ok: #6ff09a;
+  --warn: #ffc94d;
+  --bad: #ff7088;
+  background: rgba(var(--veil-rgb), var(--veil-a));
+  border-color: rgba(255, 255, 255, 0.28);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7), 0 0 1px rgba(0, 0, 0, 0.6);
+  transition: background-color 0.25s ease;
 }
-body.glass button { background: rgba(255, 255, 255, 0.10); border-color: rgba(255, 255, 255, 0.22); text-shadow: none; }
-body.glass .bar { background: rgba(255, 255, 255, 0.18); }
-body.glass #news-list .tag { background: rgba(255, 196, 85, 0.22); }
-body.glass.compact { background: rgba(12, 12, 16, 0.12); }
+body.glass .card { background: var(--panel); border-color: rgba(255, 255, 255, 0.14); transition: background-color 0.25s ease; }
+body.glass header { border-bottom-color: rgba(255, 255, 255, 0.12); }
+body.glass button { background: rgba(255, 255, 255, 0.10); border-color: rgba(255, 255, 255, 0.25); }
+body.glass .bar { background: rgba(255, 255, 255, 0.22); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35); }
+body.glass #news-list .tag { background: rgba(255, 196, 85, 0.25); text-shadow: none; }
+
+/* 滑鼠在視窗上：變不透明，文字不再需要陰影 */
+body.glass.solid-on-hover.hover:not(.previewing) {
+  background: rgba(var(--veil-rgb), var(--solid-a));
+  text-shadow: none;
+}
+body.glass.solid-on-hover.hover:not(.previewing) .card { background: var(--panel-solid); }
 
 @media (prefers-color-scheme: light) {
   body.glass {
-    --panel: rgba(255, 255, 255, 0.30);
-    --line: rgba(0, 0, 0, 0.10);
-    --text: #0d0f14;
-    --muted: rgba(0, 0, 0, 0.62);
-    --ok: #12803a;
-    --warn: #b35c00;
-    --bad: #c81e3a;
-    --codex: #2f5fd0;
-    --claude: #c4532f;
-    background: rgba(255, 255, 255, 0.16);
-    border-color: rgba(255, 255, 255, 0.55);
-    text-shadow: 0 1px 1px rgba(255, 255, 255, 0.55);
+    --veil-rgb: 246, 247, 250;
+    --panel: rgba(255, 255, 255, 0.10);
+    --panel-solid: rgba(255, 255, 255, 0.75);
+    --line: rgba(0, 0, 0, 0.12);
+    --text: #0b0d12;
+    --muted: rgba(0, 0, 0, 0.70);
+    --ok: #0e7a35;
+    --warn: #a85400;
+    --bad: #c41a36;
+    --codex: #2a58c8;
+    --claude: #bf4c28;
+    border-color: rgba(255, 255, 255, 0.6);
+    text-shadow: 0 0 2px rgba(255, 255, 255, 0.95), 0 0 6px rgba(255, 255, 255, 0.7);
   }
-  body.glass button { background: rgba(255, 255, 255, 0.45); border-color: rgba(0, 0, 0, 0.10); }
-  body.glass .bar { background: rgba(0, 0, 0, 0.10); }
-  body.glass #news-list .tag { background: rgba(179, 92, 0, 0.14); }
-  body.glass.compact { background: rgba(255, 255, 255, 0.10); }
+  body.glass .card { border-color: rgba(255, 255, 255, 0.5); }
+  body.glass header { border-bottom-color: rgba(0, 0, 0, 0.08); }
+  body.glass button { background: rgba(255, 255, 255, 0.35); border-color: rgba(0, 0, 0, 0.12); }
+  body.glass .bar { background: rgba(0, 0, 0, 0.12); box-shadow: none; }
+  body.glass #news-list .tag { background: rgba(168, 84, 0, 0.14); }
 }
+
 #update-bar { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--line); color: var(--ok); }
 #update-bar span { flex: 1; }
 body.compact #update-bar { display: none; }

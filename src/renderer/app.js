@@ -147,13 +147,14 @@ function renderNews() {
   }).slice(0, 40);
   list.innerHTML = items.length ? items.map((i) => `
     <li data-url="${esc(i.url)}">
-      <span class="src"><span class="dot ${i.provider}"></span>${esc(i.source)}${i.at ? ` · ${fmtAgo(i.at)}` : ''}${i.isReset ? '<span class="tag">reset</span>' : ''}</span>
+      <span class="src"><span class="dot ${i.provider}"></span>${esc(i.source)}${i.at ? ` · ${fmtAgo(i.at)}` : ''}${i.isReset ? `<span class="tag">reset${i.kind ? ` · ${esc(i.kind)}` : ''}</span>` : ''}</span>
       <span class="title">${esc(i.title)}</span>
     </li>`).join('') : '<li class="empty">目前沒有符合的公告</li>';
   const meta = $('#news-meta');
   const parts = [];
   if (n.errors && n.errors.length) parts.push(`部分來源讀取失敗：${n.errors.join('；')}`);
-  if (n.updatedAt) parts.push(`更新於 ${fmtAgo(n.updatedAt)}`);
+  if (n.tiboCheckedAt) parts.push(`tibo 每分鐘檢查，上次 ${fmtAgo(n.tiboCheckedAt)}`);
+  else if (n.updatedAt) parts.push(`更新於 ${fmtAgo(n.updatedAt)}`);
   meta.textContent = parts.join('　');
   meta.classList.toggle('error', Boolean(n.errors && n.errors.length));
 }
@@ -166,6 +167,22 @@ function render() {
 }
 
 if (new URLSearchParams(location.search).get('glass') === '1') document.body.classList.add('glass');
+
+// 毛玻璃：平常幾乎全透明，滑鼠移上去才變不透明（離開後稍等一下再變回去，避免閃爍）
+let look = { restOpacity: 0, hoverSolid: true };
+let leaveTimer;
+function applyLook(l) {
+  look = { ...look, ...l };
+  document.body.style.setProperty('--veil-a', String(look.restOpacity / 100));
+  document.body.classList.toggle('solid-on-hover', look.hoverSolid);
+}
+function setHover(h) {
+  clearTimeout(leaveTimer);
+  if (h) document.body.classList.add('hover');
+  else leaveTimer = setTimeout(() => document.body.classList.remove('hover'), 350);
+}
+window.quota.onHover(setHover);
+window.quota.onLook(applyLook);
 
 function applyMode(compact) {
   document.body.classList.toggle('compact', compact);
@@ -185,7 +202,11 @@ function showUpdate(v) {
 }
 window.quota.onUpdate(showUpdate);
 $('#btn-update').addEventListener('click', () => window.quota.installUpdate());
-window.quota.getSettings().then((s) => { applyMode(Boolean(s.compact)); showUpdate(s.updateReady); });
+window.quota.getSettings().then((s) => {
+  applyMode(Boolean(s.compact));
+  showUpdate(s.updateReady);
+  applyLook({ restOpacity: s.restOpacity ?? 0, hoverSolid: s.hoverSolid !== false });
+});
 
 $('#news-list').addEventListener('click', (e) => {
   const li = e.target.closest('li[data-url]');
@@ -210,6 +231,10 @@ async function openSettings() {
   $('#s-version').textContent = `版本 ${s.version}，有新版會自動下載。`;
   $('#s-login').checked = s.openAtLogin;
   $('#s-notify').checked = s.notify;
+  $('#s-rest').value = s.restOpacity ?? 0;
+  $('#s-rest-v').textContent = `${s.restOpacity ?? 0}%`;
+  $('#s-hover').checked = s.hoverSolid !== false;
+  $('#s-low').value = s.lowPercent ?? 10;
   $('#s-xtoken').value = '';
   $('#s-xtoken').placeholder = s.hasXToken ? '已設定（留空表示不變）' : '留空則不讀官方 X 帳號';
   $('#view-main').hidden = true;
@@ -220,7 +245,16 @@ function closeSettings() {
   $('#view-main').hidden = false;
 }
 $('#btn-settings').addEventListener('click', () => ($('#view-settings').hidden ? openSettings() : closeSettings()));
-$('#s-cancel').addEventListener('click', closeSettings);
+$('#s-cancel').addEventListener('click', () => { closeSettings(); window.quota.getSettings().then((s) => applyLook({ restOpacity: s.restOpacity ?? 0 })); });
+// 拖拉時即時預覽透明度
+let previewTimer;
+$('#s-rest').addEventListener('input', () => {
+  $('#s-rest-v').textContent = `${$('#s-rest').value}%`;
+  applyLook({ restOpacity: Number($('#s-rest').value) });
+  document.body.classList.add('previewing'); // 拖拉時暫時顯示「平常」的樣子
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(() => document.body.classList.remove('previewing'), 1200);
+});
 $('#s-clear-x').addEventListener('click', async () => {
   await window.quota.saveSettings({ xToken: '' });
   closeSettings();
@@ -233,6 +267,9 @@ $('#s-save').addEventListener('click', async () => {
     theme: $('#s-theme').value,
     openAtLogin: $('#s-login').checked,
     notify: $('#s-notify').checked,
+    restOpacity: Number($('#s-rest').value),
+    hoverSolid: $('#s-hover').checked,
+    lowPercent: Number($('#s-low').value),
   };
   const token = $('#s-xtoken').value.trim();
   if (token) patch.xToken = token;

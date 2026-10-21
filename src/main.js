@@ -1,9 +1,9 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, net, nativeImage, Notification, shell, safeStorage, screen, session, nativeTheme } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, net, nativeImage, Notification, shell, safeStorage, screen, session, nativeTheme, powerMonitor } = require('electron');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { fetchClaude, fetchClaudeWeb, fetchCodex } = require('./providers');
-const { fetchNews } = require('./news');
+const { fetchStatusFeeds, fetchTibo, fetchX, fetchTweetText, mergeNews } = require('./news');
 
 // 自動更新：從 GitHub Releases 下載新版，下載完跳通知，重開即套用（結束時也會自動套用）
 let autoUpdater = null;
@@ -26,7 +26,7 @@ function setupAutoUpdate() {
   autoUpdater.on('error', () => { /* 沒網路或 GitHub 暫時連不上時，下次再試 */ });
   const check = () => autoUpdater.checkForUpdates().catch(() => {});
   check();
-  setInterval(check, 6 * 60 * MIN);
+  setInterval(check, 2 * 60 * MIN);
 }
 
 function installUpdate() {
@@ -36,7 +36,14 @@ function installUpdate() {
 }
 
 const MIN = 60 * 1000;
-const DEFAULT_SETTINGS = { usageMinutes: 5, newsMinutes: 15, alwaysOnTop: true, openAtLogin: false, notify: true, xToken: null, compact: false, theme: 'system' };
+const DEFAULT_SETTINGS = {
+  usageMinutes: 5, newsMinutes: 15, alwaysOnTop: true, openAtLogin: false, notify: true, xToken: null,
+  compact: false, theme: 'system',
+  restOpacity: 0, // 平常（滑鼠不在上面）時鋪在毛玻璃上的底色濃度，0–60%
+  hoverSolid: true, // 滑鼠移上去時變不透明
+  lowPercent: 10, // 剩餘低於這個百分比時通知，0 表示不通知
+};
+const TIBO_MS = 60 * 1000; // tibo 的 reset 貼文每分鐘檢查一次
 // Windows 11 22H2（build 22621）以上才有 acrylic 毛玻璃，舊版維持不透明背景
 const GLASS = process.platform === 'win32' && Number(os.release().split('.')[2]) >= 22621;
 const COMPACT = { width: 560, height: 42 };
@@ -48,7 +55,6 @@ let settings;
 const state = { claude: null, codex: null, news: null };
 const timers = {};
 const backoff = { claude: 1, codex: 1 };
-let seenNewsIds = null; // 第一次載入時不跳通知
 
 // ---------- 設定（X token 用作業系統的加密儲存） ----------
 
@@ -79,13 +85,24 @@ function publicSettings() {
 
 // ---------- 抓資料 ----------
 
-const fetchImpl = (url, opts) => net.fetch(url, opts);
+// 一律不走 HTTP 快取，避免拿到舊的公告或額度
+const fetchImpl = (url, opts = {}) => net.fetch(url, { cache: 'no-store', ...opts });
+
+function readJson(name, fallback) {
+  try { return JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), name), 'utf8')); } catch { return fallback; }
+}
+function writeJson(name, data) {
+  try {
+    fs.mkdirSync(app.getPath('userData'), { recursive: true });
+    fs.writeFileSync(path.join(app.getPath('userData'), name), JSON.stringify(data));
+  } catch { /* 寫不進去就算了，下次重算 */ }
+}
 
 // ---------- claude.ai 登入（給只用 Claude 桌面版、沒有 CLI 登入資料的人） ----------
 
 const CLAUDE_PARTITION = 'persist:claude-web';
 const claudeSession = () => session.fromPartition(CLAUDE_PARTITION);
-const claudeWebFetch = (url, opts) => claudeSession().fetch(url, opts);
+const claudeWebFetch = (url, opts = {}) => claudeSession().fetch(url, { cache: 'no-store', ...opts });
 
 async function fetchClaudeAny(f) {
   try {
@@ -119,7 +136,7 @@ function openClaudeLogin() {
     const url = new URL(loginWin.webContents.getURL());
     if (cookies.length && url.hostname === 'claude.ai' && !/^\/(login|magic-link|onboarding)/.test(url.pathname)) {
       loginWin.close();
-      refreshProvider('claude', 'Claude Code', fetchClaudeAny);
+      refreshProvider('claude');
     }
   };
   loginWin.webContents.on('did-navigate', check);
@@ -129,7 +146,7 @@ function openClaudeLogin() {
 
 async function logoutClaudeWeb() {
   await claudeSession().clearStorageData();
-  refreshProvider('claude', 'Claude Code', fetchClaudeAny);
+  refreshProvider('claude');
 }
 
 function push() {
@@ -155,47 +172,165 @@ function detectReset(name, prev, next) {
   }
 }
 
-async function refreshProvider(key, name, fn) {
+// 剩餘額度低於門檻時通知一次（同一個額度週期只通知一次）
+let lowAlerted = null;
+function checkLow(name, data) {
+  if (!settings.lowPercent || !data.windows) return;
+  if (!lowAlerted) lowAlerted = new Set(readJson('low-alerts.json', []));
+  let changed = false;
+  for (const w of data.windows) {
+    const left = 100 - w.usedPercent;
+    const key = `${name}|${w.label}|${w.resetsAt || ''}`;
+    if (left <= settings.lowPercent && !lowAlerted.has(key)) {
+      lowAlerted.add(key);
+      changed = true;
+      const when = w.resetsAt ? `，${new Date(w.resetsAt).toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })} reset` : '';
+      notify(`${name} 額度快用完了`, `${w.label}只剩 ${Math.max(0, Math.round(left))}%${when}`);
+    }
+  }
+  if (changed) writeJson('low-alerts.json', [...lowAlerted].slice(-100));
+}
+
+const PROVIDERS = {
+  claude: { name: 'Claude Code', fn: (f) => fetchClaudeAny(f) },
+  codex: { name: 'Codex', fn: (f) => fetchCodex(f) },
+};
+
+async function refreshProvider(key) {
+  const { name, fn } = PROVIDERS[key];
   const prev = state[key];
+  let next = settings.usageMinutes * MIN;
   try {
     const data = await fn(fetchImpl);
     state[key] = { ok: true, ...data, updatedAt: new Date().toISOString() };
     backoff[key] = 1;
     detectReset(name, prev, state[key]);
+    checkLow(name, state[key]);
+    // 某個額度快到 reset 時間時，到點後 20 秒就再查一次，馬上看到新額度
+    for (const w of data.windows || []) {
+      const ms = w.resetsAt ? Date.parse(w.resetsAt) - Date.now() + 20 * 1000 : Infinity;
+      if (ms > 0 && ms < next) next = Math.max(30 * 1000, ms);
+    }
   } catch (e) {
     if (e.kind === 'rate-limited') backoff[key] = Math.min(backoff[key] * 2, 6);
+    next *= backoff[key];
     // 失敗時保留上一次的數值，只加上錯誤訊息
     state[key] = { ...(prev && prev.windows ? prev : {}), ok: false, error: e.message, errorKind: e.kind || 'network', failedAt: new Date().toISOString() };
   }
   push();
   clearTimeout(timers[key]);
-  timers[key] = setTimeout(() => refreshProvider(key, name, fn), settings.usageMinutes * MIN * backoff[key]);
+  timers[key] = setTimeout(() => refreshProvider(key), next);
 }
 
-async function refreshNews() {
-  try {
-    const news = await fetchNews(fetchImpl, { xBearerToken: settings.xToken });
-    const ids = news.items.filter((i) => i.isReset).map((i) => i.id || i.url);
-    if (seenNewsIds) {
-      for (const item of news.items) {
-        const id = item.id || item.url;
-        if (item.isReset && !seenNewsIds.has(id)) notify(`${item.source}`, item.title, item.url);
-      }
-    }
-    seenNewsIds = new Set([...(seenNewsIds || []), ...ids]);
-    state.news = { ...news, updatedAt: new Date().toISOString() };
-  } catch (e) {
-    state.news = { ...(state.news || { items: [] }), errors: [e.message] };
-  }
+// ---------- 公告：tibo 每分鐘、狀態頁和 X 依設定的間隔 ----------
+
+const news = {
+  tibo: { items: [], error: null, lastPolledAt: null, checkedAt: null },
+  status: { items: [], errors: [] },
+  x: { items: [], errors: [] },
+};
+let tweetText = null; // postId → 貼文內文，存在本機，避免重複抓
+const tweetFailed = new Set();
+let notified = null; // 已經通知過（或第一次讀到時就存在）的 reset 公告
+let seeded = null; // 哪些來源已經讀過第一次
+
+function withText(items) {
+  return items.map((i) => (i.postId && tweetText[i.postId] ? { ...i, title: tweetText[i.postId] } : i));
+}
+
+function publishNews() {
+  state.news = {
+    items: mergeNews([withText(news.tibo.items), news.x.items, news.status.items]),
+    errors: [news.tibo.error, ...news.status.errors, ...news.x.errors].filter(Boolean),
+    tiboPolledAt: news.tibo.lastPolledAt,
+    tiboCheckedAt: news.tibo.checkedAt,
+    updatedAt: new Date().toISOString(),
+  };
   push();
+}
+
+async function loadTweetText(postId) {
+  if (tweetText[postId] || tweetFailed.has(postId)) return tweetText[postId] || null;
+  try {
+    const text = await Promise.race([fetchTweetText(fetchImpl, postId), new Promise((r) => setTimeout(() => r(null), 8000))]);
+    if (text) { tweetText[postId] = text; writeJson('tweets.json', tweetText); } else tweetFailed.add(postId);
+    return text;
+  } catch {
+    tweetFailed.add(postId);
+    return null;
+  }
+}
+
+// 每個來源第一次讀到時，把現有的公告都當成看過；之後每則新的 reset 公告只通知一次。
+// 電腦關機或睡眠時發的公告，開機後 24 小時內的仍會補通知。
+function takeFresh(group, items) {
+  if (notified === null) {
+    const saved = readJson('notified.json', {});
+    notified = new Set(Array.isArray(saved.ids) ? saved.ids : []);
+    seeded = new Set(Array.isArray(saved.seeded) ? saved.seeded : []);
+  }
+  const seedAll = !seeded.has(group);
+  seeded.add(group);
+  const fresh = [];
+  for (const i of items) {
+    const id = i.id || i.url;
+    if (!i.isReset || notified.has(id)) continue;
+    notified.add(id);
+    const recent = i.at && Date.now() - Date.parse(i.at) < 24 * 60 * MIN;
+    if (!seedAll && recent) fresh.push(i);
+  }
+  writeJson('notified.json', { ids: [...notified].slice(-300), seeded: [...seeded] });
+  return fresh;
+}
+
+async function announce(items) {
+  for (const i of items) {
+    const text = i.postId ? await loadTweetText(i.postId) : null;
+    notify(i.source + (i.kind ? `：${i.kind} reset` : ''), text || i.title, i.url);
+  }
+  // tibo 宣布 reset 後馬上查一次 Codex 額度，3 分鐘後再查一次（reset 生效可能會晚一點）
+  if (items.some((i) => i.provider === 'codex')) {
+    refreshProvider('codex');
+    setTimeout(() => refreshProvider('codex'), 3 * MIN);
+  }
+}
+
+async function refreshTibo() {
+  try {
+    const r = await fetchTibo(fetchImpl);
+    news.tibo = { items: r.items, error: null, lastPolledAt: r.lastPolledAt, checkedAt: new Date().toISOString() };
+    const fresh = takeFresh('tibo', r.items);
+    publishNews();
+    if (fresh.length) await announce(fresh);
+    // 補抓還沒有內文的貼文（最新 10 則）
+    for (const i of r.items.slice(0, 10)) if (i.postId && !tweetText[i.postId]) await loadTweetText(i.postId);
+  } catch (e) {
+    news.tibo.error = e.message;
+  }
+  publishNews();
+  clearTimeout(timers.tibo);
+  timers.tibo = setTimeout(refreshTibo, TIBO_MS);
+}
+
+async function refreshOtherNews() {
+  const [status, x] = await Promise.all([
+    fetchStatusFeeds(fetchImpl).catch((e) => ({ items: news.status.items, errors: [e.message] })),
+    settings.xToken ? fetchX(fetchImpl, settings.xToken).catch((e) => ({ items: news.x.items, errors: [e.message] })) : { items: [], errors: [] },
+  ]);
+  news.status = status;
+  news.x = x;
+  const fresh = [...takeFresh('status', status.items), ...(settings.xToken ? takeFresh('x', x.items) : [])];
+  publishNews();
+  if (fresh.length) await announce(fresh);
   clearTimeout(timers.news);
-  timers.news = setTimeout(refreshNews, settings.newsMinutes * MIN);
+  timers.news = setTimeout(refreshOtherNews, settings.newsMinutes * MIN);
 }
 
 function refreshAll() {
-  refreshProvider('claude', 'Claude Code', fetchClaudeAny);
-  refreshProvider('codex', 'Codex', fetchCodex);
-  refreshNews();
+  refreshProvider('claude');
+  refreshProvider('codex');
+  refreshTibo();
+  refreshOtherNews();
 }
 
 // ---------- 視窗與系統匣 ----------
@@ -233,6 +368,21 @@ function createWindow() {
     if (!app.isQuitting) { e.preventDefault(); win.hide(); }
   });
   win.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
+}
+
+// 毛玻璃「滑過才不透明」：拖曳區不會觸發網頁的 :hover，所以由主程式看游標在不在視窗上
+let hovering = false;
+function startHoverWatch() {
+  setInterval(() => {
+    if (!win || win.isDestroyed() || !win.isVisible()) return;
+    const p = screen.getCursorScreenPoint();
+    const b = win.getBounds();
+    const inside = p.x >= b.x && p.x < b.x + b.width && p.y >= b.y && p.y < b.y + b.height;
+    if (inside !== hovering) {
+      hovering = inside;
+      win.webContents.send('hover', inside);
+    }
+  }, 120);
 }
 
 function trayIcon() {
@@ -327,10 +477,14 @@ ipcMain.handle('refresh', () => refreshAll());
 ipcMain.handle('hide', () => win.hide());
 ipcMain.handle('open-url', (_e, url) => { if (/^https:\/\//.test(url)) shell.openExternal(url); });
 ipcMain.handle('save-settings', (_e, patch) => {
-  const allowed = ['usageMinutes', 'newsMinutes', 'alwaysOnTop', 'openAtLogin', 'notify', 'xToken', 'theme'];
+  const allowed = ['usageMinutes', 'newsMinutes', 'alwaysOnTop', 'openAtLogin', 'notify', 'xToken', 'theme', 'restOpacity', 'hoverSolid', 'lowPercent'];
   for (const k of allowed) if (k in patch) settings[k] = patch[k];
   settings.usageMinutes = Math.max(2, Number(settings.usageMinutes) || 5);
   settings.newsMinutes = Math.max(5, Number(settings.newsMinutes) || 15);
+  settings.restOpacity = Math.max(0, Math.min(60, Number(settings.restOpacity) || 0));
+  settings.hoverSolid = settings.hoverSolid !== false;
+  settings.lowPercent = Math.max(0, Math.min(50, Number(settings.lowPercent) || 0));
+  if (win && !win.isDestroyed()) win.webContents.send('look', { restOpacity: settings.restOpacity, hoverSolid: settings.hoverSolid });
   if (settings.xToken === '') settings.xToken = null;
   saveSettings();
   if (!['system', 'light', 'dark'].includes(settings.theme)) settings.theme = 'system';
@@ -355,11 +509,17 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(() => {
     if (process.platform === 'win32') app.setAppUserModelId('local.quota-monitor');
     settings = loadSettings();
+    tweetText = readJson('tweets.json', {});
     nativeTheme.themeSource = ['light', 'dark'].includes(settings.theme) ? settings.theme : 'system';
     createWindow();
     createTray();
     refreshAll();
     setupAutoUpdate();
+    // 睡眠喚醒或解鎖後網路要一點時間才會通，等幾秒再全部更新
+    const wake = () => setTimeout(refreshAll, 8000);
+    powerMonitor.on('resume', wake);
+    powerMonitor.on('unlock-screen', wake);
+    startHoverWatch();
   });
   app.on('window-all-closed', (e) => e.preventDefault());
 }

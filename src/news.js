@@ -21,7 +21,10 @@ function decodeEntities(s) {
   return s
     .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
     .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
-    .replace(/&#39;|&apos;/g, "'").replace(/&amp;/g, '&');
+    .replace(/&#39;|&apos;/g, "'").replace(/&mdash;/g, '—').replace(/&nbsp;/g, ' ')
+    .replace(/&#(\d+);/g, (_m, n) => String.fromCodePoint(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (_m, n) => String.fromCodePoint(parseInt(n, 16)))
+    .replace(/&amp;/g, '&');
 }
 
 function tag(xml, name) {
@@ -47,18 +50,37 @@ function parseRss(xml, feed) {
   return items;
 }
 
+const RESET_TYPE_LABEL = { automatic: '自動', banked: '可存用', both: '自動＋可存用' };
+
 function parseTokenusage(json) {
   return (json.resets || []).map((r) => ({
     provider: 'codex',
     source: '@thsottiaux（tibo）',
-    title: r.resetType === 'banked' ? 'tibo 宣布 Codex 額度 reset（可存用）'
-      : r.resetType === 'both' ? 'tibo 宣布 Codex 額度 reset（自動＋可存用）'
-      : 'tibo 宣布 Codex 額度 reset',
+    title: 'tibo 宣布 Codex 額度 reset',
+    kind: RESET_TYPE_LABEL[r.resetType] || null,
     url: r.url,
     at: r.postedAt,
     isReset: true,
     id: `x:${r.postId}`,
+    postId: r.postId,
   }));
+}
+
+// 用 X 公開的 oEmbed 取貼文內文（不用登入、不用金鑰），讓列表顯示 tibo 實際說了什麼
+function parseOembedText(html) {
+  const m = /<p[^>]*>([\s\S]*?)<\/p>/i.exec(html || '');
+  if (!m) return null;
+  const text = decodeEntities(m[1].replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, ''))
+    .replace(/\s*(https?:\/\/t\.co\/\S+|pic\.twitter\.com\/\S+)\s*$/g, '')
+    .trim();
+  return text || null;
+}
+
+async function fetchTweetText(fetchImpl, postId) {
+  const url = `https://publish.twitter.com/oembed?omit_script=1&dnt=true&url=${encodeURIComponent(`https://twitter.com/i/status/${postId}`)}`;
+  const res = await fetchImpl(url, { headers: { Accept: 'application/json' } });
+  if (!res.ok) return null;
+  return parseOembedText((await res.json()).html);
 }
 
 async function fetchStatusFeeds(fetchImpl) {
@@ -71,11 +93,13 @@ async function fetchStatusFeeds(fetchImpl) {
   return collect(results);
 }
 
+// tokenusage.dev 偵測到 tibo 發文通常只差 30 秒左右，它的伺服器快取 15 秒，請求別快於這個
 async function fetchTibo(fetchImpl) {
   const res = await fetchImpl('https://tokenusage.dev/api/resets', { headers: { Accept: 'application/json' } })
     .catch((e) => { throw new Error(`tokenusage.dev 連不上（${e.message}）`); });
   if (!res.ok) throw new Error(`tokenusage.dev 回應 ${res.status}`);
-  return parseTokenusage(await res.json()).slice(0, 20);
+  const json = await res.json();
+  return { items: parseTokenusage(json).slice(0, 20), lastPolledAt: json.lastPolledAt || null };
 }
 
 const xUserIds = new Map();
@@ -112,28 +136,23 @@ function collect(results) {
   return { items, errors };
 }
 
-async function fetchNews(fetchImpl, { xBearerToken } = {}) {
-  const tasks = [
-    fetchStatusFeeds(fetchImpl),
-    fetchTibo(fetchImpl).then((items) => ({ items, errors: [] })),
-  ];
-  if (xBearerToken) tasks.push(fetchX(fetchImpl, xBearerToken));
-  const items = [];
-  const errors = [];
-  for (const r of await Promise.allSettled(tasks)) {
-    if (r.status === 'fulfilled') { items.push(...r.value.items); errors.push(...r.value.errors); }
-    else errors.push(r.reason.message);
-  }
-  // 同一則 X 貼文可能同時來自 tokenusage 和 X API，去重
+// 各來源分開抓（tibo 每分鐘、狀態頁和 X 依設定），這裡合併、去重、排序
+function mergeNews(groups) {
   const seen = new Set();
-  const unique = items.filter((i) => {
-    const key = i.id || i.url;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-  unique.sort((a, b) => (b.at || '').localeCompare(a.at || ''));
-  return { items: unique, errors };
+  const items = [];
+  for (const g of groups) {
+    for (const i of g || []) {
+      const key = i.id || i.url;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      items.push(i);
+    }
+  }
+  items.sort((a, b) => (b.at || '').localeCompare(a.at || ''));
+  return items;
 }
 
-module.exports = { fetchNews, parseRss, parseTokenusage, RESET_RE };
+module.exports = {
+  fetchStatusFeeds, fetchTibo, fetchX, fetchTweetText, mergeNews,
+  parseRss, parseTokenusage, parseOembedText, RESET_RE,
+};

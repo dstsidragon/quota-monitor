@@ -63,6 +63,11 @@
     <label>外觀（毛玻璃文字顏色）
       <select id="s-theme"><option value="system">跟隨 Windows</option><option value="light">淺色（深色文字）</option><option value="dark">深色（白色文字）</option></select>
     </label>
+    <label>平常的底色濃度 <span id="s-rest-v"></span>（0% 最透明）
+      <input type="range" id="s-rest" min="0" max="60" step="5">
+    </label>
+    <label class="check"><input type="checkbox" id="s-hover"> 滑鼠移上去時變不透明</label>
+    <label>剩餘低於幾 % 時通知（0 表示不通知）<input type="number" id="s-low" min="0" max="50"></label>
     <label class="check"><input type="checkbox" id="s-top"> 視窗保持在最上層</label>
     <label class="check"><input type="checkbox" id="s-login"> 開機時自動啟動</label>
     <label class="check"><input type="checkbox" id="s-notify"> 有新的 reset 公告或額度被 reset 時跳通知</label>
