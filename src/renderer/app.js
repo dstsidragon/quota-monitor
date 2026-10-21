@@ -221,16 +221,40 @@ $('#btn-hide2').addEventListener('click', () => window.quota.hide());
 $('#btn-claude-login').addEventListener('click', () => window.quota.claudeLogin());
 $('#btn-claude-logout').addEventListener('click', (e) => { e.preventDefault(); window.quota.claudeLogout(); });
 window.quota.onMode(applyMode);
-function showUpdate(v) {
-  if (!v) return;
-  $('#update-text').textContent = `新版 ${v} 已下載`;
-  $('#update-bar').hidden = false;
+// 新版本：下載中在上方顯示進度；下載好後上方和極簡列都有「更新」按鈕，按一下重新啟動套用
+let upd = { status: 'idle' };
+let appVersion = '';
+const UPDATE_TEXT = {
+  checking: () => '正在檢查新版本…',
+  downloading: (u) => `正在下載新版 ${u.version}（${u.percent}%）`,
+  ready: (u) => `新版 ${u.version} 已下載`,
+  latest: () => '已是最新版',
+  error: () => '上次檢查時連不上 GitHub',
+  dev: () => '開發版不會自動更新',
+};
+function showUpdate(u) {
+  if (!u) return;
+  upd = u;
+  const ready = u.status === 'ready';
+  const text = UPDATE_TEXT[u.status] ? UPDATE_TEXT[u.status](u) : '';
+  $('#update-bar').hidden = !(ready || u.status === 'downloading');
+  $('#update-text').textContent = text;
+  $('#btn-update').hidden = !ready;
+  $('#btn-update2').hidden = !ready;
+  $('#btn-update2').title = ready ? `重新啟動並更新到 ${u.version}` : '';
+  $('#s-version').textContent = `版本 ${appVersion}${text ? `，${text}` : ''}`;
+  $('#s-check').textContent = ready ? '重新啟動並更新' : '檢查新版本';
+  $('#s-check').disabled = ['checking', 'downloading', 'dev'].includes(u.status);
+  if (document.body.classList.contains('compact')) { lastFit = 0; requestAnimationFrame(fitCompact); }
 }
 window.quota.onUpdate(showUpdate);
 $('#btn-update').addEventListener('click', () => window.quota.installUpdate());
+$('#btn-update2').addEventListener('click', () => window.quota.installUpdate());
+$('#s-check').addEventListener('click', () => (upd.status === 'ready' ? window.quota.installUpdate() : window.quota.checkUpdate()));
 window.quota.getSettings().then((s) => {
   applyMode(Boolean(s.compact));
-  showUpdate(s.updateReady);
+  appVersion = s.version;
+  showUpdate(s.update);
   applyLook({ restOpacity: s.restOpacity ?? 0, hoverSolid: s.hoverSolid !== false });
 });
 
@@ -260,10 +284,11 @@ async function openSettings() {
   $('#s-usage').value = s.usageMinutes;
   $('#s-news').value = s.newsMinutes;
   $('#s-top').checked = s.alwaysOnTop;
-  $('#s-theme').value = s.theme || 'system';
+  $('#s-theme').value = s.theme || 'auto';
   $('#s-glass-row').hidden = !s.blurAvailable;
   $('#s-glass').value = s.glass === 'blur' ? 'blur' : 'clear';
-  $('#s-version').textContent = `版本 ${s.version}，有新版會自動下載。`;
+  appVersion = s.version;
+  showUpdate(s.update);
   $('#s-login').checked = s.openAtLogin;
   $('#s-notify').checked = s.notify;
   $('#s-rest').value = s.restOpacity ?? 0;

@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('quota', {
   claudeLogout: () => ipcRenderer.invoke('claude-logout'),
   onMode: (cb) => ipcRenderer.on('mode', (_e, c) => cb(c)),
   installUpdate: () => ipcRenderer.invoke('install-update'),
+  checkUpdate: () => ipcRenderer.invoke('check-update'),
   onUpdate: (cb) => ipcRenderer.on('update', (_e, v) => cb(v)),
   onHover: (cb) => ipcRenderer.on('hover', (_e, h) => cb(h)),
   onLook: (cb) => ipcRenderer.on('look', (_e, l) => cb(l)),

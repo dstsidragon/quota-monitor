@@ -92,6 +92,9 @@ body.compact #view-compact { display: flex; }
 .compact-line .sep { width: 1px; height: 18px; background: var(--line); }
 .compact-line .err { color: var(--warn); }
 #view-compact .actions button { padding: 1px 7px; font-size: 11px; }
+#view-compact .actions .upd { color: var(--ok); border-color: currentColor; font-weight: 700; }
+.row.ver { align-items: center; margin-top: 10px; }
+button:disabled { cursor: default; color: var(--muted); }
 
 /* 透明背景（body.glass）：clear 完全透明、直接看到桌面；blur 是 Windows 11 的 acrylic 模糊。
    平常不鋪底色，滑鼠移上去才變不透明。文字一律不透明、顏色維持飽和，

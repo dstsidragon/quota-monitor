@@ -11,7 +11,7 @@
     <h1>額度監控器</h1>
     <div class="actions no-drag">
       <button id="btn-compact" title="極簡模式（縮成一行）">▁</button>
-      <button id="btn-refresh" title="立即更新">⟳</button>
+      <button id="btn-refresh" title="重新讀取額度">⟳</button>
       <button id="btn-settings" title="設定">⚙</button>
       <button id="btn-hide" title="收到系統匣">✕</button>
     </div>
@@ -20,6 +20,7 @@
   <div id="view-compact">
     <div class="compact-line drag" id="compact-line"></div>
     <div class="actions no-drag">
+      <button id="btn-update2" class="upd" hidden>⬆ 更新</button>
       <button id="btn-expand" title="展開">▢</button>
       <button id="btn-hide2" title="收到系統匣">✕</button>
     </div>
@@ -64,8 +65,9 @@
       <select id="s-glass"><option value="clear">完全透明（直接看到桌面）</option><option value="blur">毛玻璃模糊</option></select>
     </label>
     <label>文字顏色
-      <select id="s-theme"><option value="system">跟隨 Windows</option><option value="light">淺色（深色文字）</option><option value="dark">深色（白色文字）</option></select>
+      <select id="s-theme"><option value="auto">自動（依背後桌面深淺）</option><option value="system">跟隨 Windows 深淺色</option><option value="light">固定深色文字</option><option value="dark">固定白色文字</option></select>
     </label>
+    <p class="hint">「自動」會每幾秒看一下小工具背後的亮度：背後亮就用深色字，暗就用白色字。只在這台電腦上算出一個亮度值，不會存下畫面或傳出去。</p>
     <label>平常的底色濃度 <span id="s-rest-v"></span>（0% 完全透明）
       <input type="range" id="s-rest" min="0" max="60" step="5">
     </label>
@@ -78,7 +80,7 @@
       <input type="password" id="s-xtoken" placeholder="留空則不讀官方 X 帳號">
     </label>
     <p class="hint">X 官方 API 要付費才能讀貼文。填了之後會讀 @thsottiaux、@OpenAIDevs、@claudeai、@AnthropicAI 裡提到 reset 或額度的貼文。Token 用系統加密存在這台電腦上。沒填的話，tibo 的 reset 貼文仍會從 tokenusage.dev 取得。</p>
-    <p class="hint" id="s-version"></p>
+    <div class="row ver"><span class="hint" id="s-version"></span><span class="spacer"></span><button id="s-check" class="secondary">檢查新版本</button></div>
     <div class="row">
       <button id="s-clear-x" class="secondary">清除 X Token</button>
       <span class="spacer"></span>

@@ -142,3 +142,21 @@ test('fetchClaudeWeb 選有 chat 的組織並讀 usage', async () => {
   assert.strictEqual(r.source, 'web');
   await assert.rejects(fetchClaudeWeb(async () => res(403, {})), (e) => e.kind === 'web-login');
 });
+
+const { medianLuma, pickBackdrop, cropRect } = require('../src/backdrop');
+
+test('背景亮度：中位數不受少量文字影響、中間值不切換', () => {
+  const px = (n, v) => Buffer.from(Array.from({ length: n }, () => [v, v, v, 255]).flat());
+  // 80% 深色桌布 + 20% 白色文字 → 仍判斷為暗
+  const dark = medianLuma(Buffer.concat([px(80, 20), px(20, 255)]));
+  assert.ok(dark < 0.2);
+  assert.equal(pickBackdrop(dark, 'light'), 'dark');
+  assert.equal(pickBackdrop(medianLuma(px(10, 240)), 'dark'), 'light');
+  assert.equal(pickBackdrop(0.5, 'dark'), 'dark');
+  assert.equal(pickBackdrop(0.5, 'light'), 'light');
+  assert.equal(pickBackdrop(null, 'light'), 'light');
+  assert.deepEqual(
+    cropRect({ x: 1900, y: 40, width: 800, height: 42 }, { x: 1920, y: 0, width: 1920, height: 1080 }, { width: 480, height: 270 }),
+    { x: 0, y: 10, width: 200, height: 11 },
+  );
+});

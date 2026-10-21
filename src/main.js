@@ -1,48 +1,72 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, net, nativeImage, Notification, shell, safeStorage, screen, session, nativeTheme, powerMonitor } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, net, nativeImage, Notification, shell, safeStorage, screen, session, nativeTheme, powerMonitor, desktopCapturer } = require('electron');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { fetchClaude, fetchClaudeWeb, fetchCodex } = require('./providers');
 const { fetchStatusFeeds, fetchTibo, fetchX, fetchTweetText, mergeNews } = require('./news');
+const { medianLuma, pickBackdrop, cropRect } = require('./backdrop');
 
-// 自動更新：從 GitHub Releases 下載新版，下載完跳通知，重開即套用（結束時也會自動套用）
+// 自動更新：從 GitHub Releases 下載新版，下載完跳通知，按一下就重新啟動並套用（結束時也會自動套用）。
+// 每 30 分鐘自己檢查一次，也可以從系統匣、設定手動檢查。
 let autoUpdater = null;
-let updateReady = null;
+// status：idle | checking | downloading | ready | latest | error | dev（開發版不更新）
+const upd = { status: 'idle', version: null, percent: 0 };
+function setUpd(patch) {
+  const before = JSON.stringify(upd);
+  Object.assign(upd, patch);
+  if (JSON.stringify(upd) === before) return;
+  buildTrayMenu();
+  if (win && !win.isDestroyed()) win.webContents.send('update', upd);
+}
+
 function setupAutoUpdate() {
-  if (!app.isPackaged) return;
+  if (!app.isPackaged) { upd.status = 'dev'; return; }
   try {
     ({ autoUpdater } = require('electron-updater'));
   } catch {
+    upd.status = 'dev';
     return;
   }
+  const busy = () => upd.status === 'ready' || upd.status === 'downloading';
+  autoUpdater.on('checking-for-update', () => { if (!busy()) setUpd({ status: 'checking' }); });
+  autoUpdater.on('update-available', (info) => setUpd({ status: 'downloading', version: info.version, percent: 0 }));
+  autoUpdater.on('download-progress', (p) => setUpd({ status: 'downloading', percent: Math.floor(p.percent || 0) }));
+  autoUpdater.on('update-not-available', () => { if (!busy()) setUpd({ status: 'latest' }); });
   autoUpdater.on('update-downloaded', (info) => {
-    updateReady = info.version;
-    buildTrayMenu();
-    if (win && !win.isDestroyed()) win.webContents.send('update', updateReady);
+    setUpd({ status: 'ready', version: info.version, percent: 100 });
     const n = new Notification({ title: `額度監控器 ${info.version} 已下載`, body: '點這裡重新啟動並更新，或下次結束時自動套用。' });
     n.on('click', installUpdate);
     n.show();
   });
-  autoUpdater.on('error', () => { /* 沒網路或 GitHub 暫時連不上時，下次再試 */ });
-  const check = () => autoUpdater.checkForUpdates().catch(() => {});
-  check();
-  setInterval(check, 2 * 60 * MIN);
+  // 沒網路或 GitHub 暫時連不上時，下次再試
+  autoUpdater.on('error', () => { if (upd.status !== 'ready') setUpd({ status: 'error' }); });
+  checkUpdate();
+  setInterval(checkUpdate, 30 * MIN);
+}
+
+// 已經下載好就直接重新啟動套用；否則馬上檢查（有新版會自動下載）
+function checkUpdate() {
+  if (upd.status === 'ready') return installUpdate();
+  if (!autoUpdater || upd.status === 'checking' || upd.status === 'downloading') return;
+  autoUpdater.checkForUpdates().catch(() => {});
 }
 
 function installUpdate() {
-  if (!autoUpdater || !updateReady) return;
+  if (!autoUpdater || upd.status !== 'ready') return;
   app.isQuitting = true;
-  autoUpdater.quitAndInstall(true, true);
+  autoUpdater.quitAndInstall(true, true); // 安靜安裝，裝完自動重新開啟
 }
 
 const MIN = 60 * 1000;
 const DEFAULT_SETTINGS = {
   usageMinutes: 5, newsMinutes: 15, alwaysOnTop: true, openAtLogin: false, notify: true, xToken: null,
-  compact: false, theme: 'system',
+  compact: false,
+  theme: 'auto', // 文字顏色：auto 依背後桌面深淺、system 跟隨 Windows、light 深色字、dark 白色字
   restOpacity: 0, // 平常（滑鼠不在上面）時鋪在毛玻璃上的底色濃度，0–60%
   hoverSolid: true, // 滑鼠移上去時變不透明
   lowPercent: 10, // 剩餘低於這個百分比時通知，0 表示不通知
   glass: 'clear', // 背景：'clear' 完全透明（直接看到桌面）、'blur' 毛玻璃模糊（Windows 11）
+  schema: 1, // 設定檔格式版本，用來搬移舊的預設值
 };
 const TIBO_MS = 60 * 1000; // tibo 的 reset 貼文每分鐘檢查一次
 // Windows 11 22H2（build 22621）以上才有 acrylic 毛玻璃模糊；完全透明則每個版本都能用
@@ -64,7 +88,10 @@ const settingsFile = () => path.join(app.getPath('userData'), 'settings.json');
 
 function loadSettings() {
   try {
-    const s = { ...DEFAULT_SETTINGS, ...JSON.parse(fs.readFileSync(settingsFile(), 'utf8')) };
+    const saved = JSON.parse(fs.readFileSync(settingsFile(), 'utf8'));
+    // 0.6.1 起文字顏色預設改成「自動」；舊設定檔裡存的是當時的預設值「跟隨 Windows」
+    if (!saved.schema && saved.theme === 'system') saved.theme = 'auto';
+    const s = { ...DEFAULT_SETTINGS, ...saved, schema: 1 };
     if (s.xTokenEnc && safeStorage.isEncryptionAvailable()) s.xToken = safeStorage.decryptString(Buffer.from(s.xTokenEnc, 'base64'));
     return s;
   } catch {
@@ -366,9 +393,9 @@ function createWindow(bounds) {
   let moveTimer;
   win.on('moved', () => {
     clearTimeout(moveTimer);
-    moveTimer = setTimeout(() => { const b = win.getBounds(); settings.pos = { x: b.x, y: b.y }; saveSettings(); }, 500);
+    moveTimer = setTimeout(() => { const b = win.getBounds(); settings.pos = { x: b.x, y: b.y }; saveSettings(); sampleBackdrop(); }, 500);
   });
-  win.once('ready-to-show', () => win.show());
+  win.once('ready-to-show', () => { win.show(); setTimeout(sampleBackdrop, 300); });
   win.on('close', (e) => {
     if (!app.isQuitting) { e.preventDefault(); win.hide(); }
   });
@@ -398,9 +425,38 @@ function startHoverWatch() {
     const inside = p.x >= b.x && p.x < b.x + b.width && p.y >= b.y && p.y < b.y + b.height;
     if (inside !== hovering) {
       hovering = inside;
+      hoverChangedAt = Date.now();
       win.webContents.send('hover', inside);
     }
   }, 120);
+}
+
+// 文字顏色「自動」：每 3 秒看一下視窗背後的亮度（滑鼠在上面時底色不透明，那時不看）
+let hoverChangedAt = 0;
+let backdrop = null;
+let sampling = false;
+function applyTheme() {
+  nativeTheme.themeSource = settings.theme === 'auto' ? (backdrop || 'system') : settings.theme;
+}
+async function sampleBackdrop() {
+  if (settings.theme !== 'auto' || sampling || !win || win.isDestroyed() || !win.isVisible()) return;
+  if (hovering || Date.now() - hoverChangedAt < 1500) return;
+  sampling = true;
+  try {
+    const b = win.getBounds();
+    const d = screen.getDisplayMatching(b);
+    const sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: { width: Math.round(d.bounds.width / 4), height: Math.round(d.bounds.height / 4) },
+    });
+    const src = sources.find((x) => x.display_id === String(d.id)) || (sources.length === 1 ? sources[0] : null);
+    if (!src || src.thumbnail.isEmpty() || hovering) return;
+    const rect = cropRect(b, d.bounds, src.thumbnail.getSize());
+    const next = pickBackdrop(medianLuma(src.thumbnail.crop(rect).toBitmap()), backdrop);
+    if (next !== backdrop) { backdrop = next; applyTheme(); }
+  } catch { /* 擷取不到就維持現在的顏色 */ } finally {
+    sampling = false;
+  }
 }
 
 function trayIcon() {
@@ -422,18 +478,29 @@ function toggleWindow() {
   else { win.show(); win.focus(); }
 }
 
+function updateMenuItem() {
+  switch (upd.status) {
+    case 'ready': return { label: `重新啟動並更新到 ${upd.version}`, click: installUpdate };
+    case 'downloading': return { label: `正在下載新版 ${upd.version}（${upd.percent}%）`, enabled: false };
+    case 'checking': return { label: '正在檢查新版本…', enabled: false };
+    case 'latest': return { label: '檢查新版本（目前已是最新版）', click: checkUpdate };
+    case 'error': return { label: '檢查新版本（上次連不上 GitHub）', click: checkUpdate };
+    default: return { label: '檢查新版本', click: checkUpdate };
+  }
+}
+
 function buildTrayMenu() {
   if (!tray) return;
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '顯示／隱藏', click: toggleWindow },
-    { label: '立即更新', click: refreshAll },
+    { label: '重新讀取額度', click: refreshAll },
     { label: '極簡模式', type: 'checkbox', checked: settings.compact, click: (i) => setCompact(i.checked) },
     ...(GLASS ? [{ label: '背景', submenu: [
       { label: '完全透明', type: 'radio', checked: glassStyle() === 'clear', click: () => setGlass('clear') },
       { label: '毛玻璃模糊', type: 'radio', checked: glassStyle() === 'blur', click: () => setGlass('blur') },
     ] }] : []),
-    ...(updateReady ? [{ label: `重新啟動並更新到 ${updateReady}`, click: installUpdate }] : []),
     { type: 'separator' },
+    ...(upd.status === 'dev' ? [] : [updateMenuItem()]),
     { label: `版本 ${app.getVersion()}`, enabled: false },
     { type: 'separator' },
     { label: '結束', click: () => { app.isQuitting = true; app.quit(); } },
@@ -493,8 +560,9 @@ ipcMain.handle('fit-compact', (_e, width) => {
 });
 ipcMain.handle('claude-login', () => openClaudeLogin());
 ipcMain.handle('claude-logout', () => logoutClaudeWeb());
-ipcMain.handle('get-settings', () => ({ ...publicSettings(), version: app.getVersion(), updateReady, blurAvailable: GLASS }));
+ipcMain.handle('get-settings', () => ({ ...publicSettings(), version: app.getVersion(), update: upd, blurAvailable: GLASS }));
 ipcMain.handle('install-update', () => installUpdate());
+ipcMain.handle('check-update', () => checkUpdate());
 ipcMain.handle('refresh', () => refreshAll());
 ipcMain.handle('hide', () => win.hide());
 ipcMain.handle('open-url', (_e, url) => { if (/^https:\/\//.test(url)) shell.openExternal(url); });
@@ -509,8 +577,9 @@ ipcMain.handle('save-settings', (_e, patch) => {
   if (win && !win.isDestroyed()) win.webContents.send('look', { restOpacity: settings.restOpacity, hoverSolid: settings.hoverSolid });
   if (settings.xToken === '') settings.xToken = null;
   saveSettings();
-  if (!['system', 'light', 'dark'].includes(settings.theme)) settings.theme = 'system';
-  nativeTheme.themeSource = settings.theme;
+  if (!['auto', 'system', 'light', 'dark'].includes(settings.theme)) settings.theme = 'auto';
+  applyTheme();
+  sampleBackdrop();
   win.setAlwaysOnTop(settings.alwaysOnTop);
   app.setLoginItemSettings({ openAtLogin: settings.openAtLogin });
   refreshAll();
@@ -534,7 +603,7 @@ if (!app.requestSingleInstanceLock()) {
     if (process.platform === 'win32') app.setAppUserModelId('local.quota-monitor');
     settings = loadSettings();
     tweetText = readJson('tweets.json', {});
-    nativeTheme.themeSource = ['light', 'dark'].includes(settings.theme) ? settings.theme : 'system';
+    applyTheme();
     createWindow();
     createTray();
     refreshAll();
@@ -544,6 +613,7 @@ if (!app.requestSingleInstanceLock()) {
     powerMonitor.on('resume', wake);
     powerMonitor.on('unlock-screen', wake);
     startHoverWatch();
+    setInterval(sampleBackdrop, 3000);
   });
   app.on('window-all-closed', (e) => e.preventDefault());
 }
