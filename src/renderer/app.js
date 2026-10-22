@@ -144,7 +144,7 @@ function renderCompact() {
     if (s && s.windows) for (const w of s.windows) tip.push(`${n} ${w.label}：剩 ${Math.round(100 - w.usedPercent)}%${w.resetsAt ? `，reset ${fmtTime(w.resetsAt)}` : ''}`);
     if (s && s.error) tip.push(`${n}：${s.error}`);
   }
-  line.title = tip.join('\n');
+  line.title = locked ? '' : tip.join('\n'); // 鎖定時連提示框都不跳
   if (document.body.classList.contains('compact')) fitCompact();
 }
 
@@ -216,8 +216,22 @@ function applyMode(compact) {
   if (compact) requestAnimationFrame(fitCompact);
 }
 $('#btn-compact').addEventListener('click', () => window.quota.setCompact(true));
-$('#btn-expand').addEventListener('click', () => window.quota.setCompact(false));
-$('#btn-hide2').addEventListener('click', () => window.quota.hide());
+// 極簡模式只留一個鎖頭：鎖上後整條滑鼠穿透，只有鎖頭有反應；展開、收起在右鍵選單和系統匣
+let locked = false;
+const lockBtn = $('#btn-lock');
+function applyLock(v) {
+  locked = v;
+  document.body.classList.toggle('locked', v);
+  lockBtn.title = v ? '已鎖定：滑鼠移過去不會有反應，點擊會穿透到後面的視窗。\n點鎖頭解鎖' : '鎖定：滑鼠穿透，只有這個鎖頭能點\n右鍵可展開或收到系統匣';
+  // 剛鎖上時游標還停在鎖頭上，要讓它繼續可以點
+  if (v && lockBtn.matches(':hover')) window.quota.lockHole(true);
+  renderCompact();
+}
+lockBtn.addEventListener('mouseenter', () => { if (locked) window.quota.lockHole(true); });
+lockBtn.addEventListener('mouseleave', () => { if (locked) window.quota.lockHole(false); });
+lockBtn.addEventListener('click', () => window.quota.setLocked(!locked));
+window.quota.onLock(applyLock);
+$('#view-compact').addEventListener('contextmenu', (e) => { e.preventDefault(); if (!locked) window.quota.compactMenu(); });
 $('#btn-claude-login').addEventListener('click', () => window.quota.claudeLogin());
 $('#btn-claude-logout').addEventListener('click', (e) => { e.preventDefault(); window.quota.claudeLogout(); });
 window.quota.onMode(applyMode);

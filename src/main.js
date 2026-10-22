@@ -66,6 +66,7 @@ const DEFAULT_SETTINGS = {
   hoverSolid: true, // 滑鼠移上去時變不透明
   lowPercent: 10, // 剩餘低於這個百分比時通知，0 表示不通知
   glass: 'clear', // 背景：'clear' 完全透明（直接看到桌面）、'blur' 毛玻璃模糊（Windows 11）
+  locked: false, // 極簡模式鎖定：滑鼠穿透整條，只有鎖頭能點
   schema: 1, // 設定檔格式版本，用來搬移舊的預設值
 };
 const TIBO_MS = 60 * 1000; // tibo 的 reset 貼文每分鐘檢查一次
@@ -396,10 +397,38 @@ function createWindow(bounds) {
     moveTimer = setTimeout(() => { const b = win.getBounds(); settings.pos = { x: b.x, y: b.y }; saveSettings(); sampleBackdrop(); }, 500);
   });
   win.once('ready-to-show', () => { win.show(); setTimeout(sampleBackdrop, 300); });
+  win.webContents.on('did-finish-load', applyLock);
+  // 在極簡列的拖曳區按右鍵：換成自己的選單（展開、鎖定、收起），不要 Windows 的系統選單
+  win.on('system-context-menu', (e) => { e.preventDefault(); compactMenu(); });
   win.on('close', (e) => {
     if (!app.isQuitting) { e.preventDefault(); win.hide(); }
   });
   win.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
+}
+
+// 極簡模式鎖定：整個視窗忽略滑鼠（點擊穿透到後面的視窗），只有滑鼠移到鎖頭上時暫時接受點擊
+const isLocked = () => Boolean(settings.compact && settings.locked);
+function applyLock() {
+  if (!win || win.isDestroyed()) return;
+  win.setIgnoreMouseEvents(isLocked(), { forward: true });
+  win.webContents.send('lock', isLocked());
+}
+function setLocked(locked) {
+  settings.locked = Boolean(locked);
+  saveSettings();
+  applyLock();
+  buildTrayMenu();
+}
+
+function compactMenu() {
+  if (!settings.compact) return;
+  Menu.buildFromTemplate([
+    { label: '展開成完整視窗', click: () => setCompact(false) },
+    { label: '鎖定（滑鼠穿透）', click: () => setLocked(true) },
+    { label: '重新讀取額度', click: refreshAll },
+    { type: 'separator' },
+    { label: '收到系統匣', click: () => win.hide() },
+  ]).popup({ window: win });
 }
 
 function setGlass(style) {
@@ -422,7 +451,8 @@ function startHoverWatch() {
     if (!win || win.isDestroyed() || !win.isVisible()) return;
     const p = screen.getCursorScreenPoint();
     const b = win.getBounds();
-    const inside = p.x >= b.x && p.x < b.x + b.width && p.y >= b.y && p.y < b.y + b.height;
+    // 鎖定時滑鼠移過去不應該有任何反應（不變不透明）
+    const inside = !isLocked() && p.x >= b.x && p.x < b.x + b.width && p.y >= b.y && p.y < b.y + b.height;
     if (inside !== hovering) {
       hovering = inside;
       hoverChangedAt = Date.now();
@@ -495,6 +525,7 @@ function buildTrayMenu() {
     { label: '顯示／隱藏', click: toggleWindow },
     { label: '重新讀取額度', click: refreshAll },
     { label: '極簡模式', type: 'checkbox', checked: settings.compact, click: (i) => setCompact(i.checked) },
+    { label: '極簡模式鎖定（滑鼠穿透）', type: 'checkbox', checked: settings.locked, click: (i) => setLocked(i.checked) },
     ...(GLASS ? [{ label: '背景', submenu: [
       { label: '完全透明', type: 'radio', checked: glassStyle() === 'clear', click: () => setGlass('clear') },
       { label: '毛玻璃模糊', type: 'radio', checked: glassStyle() === 'blur', click: () => setGlass('blur') },
@@ -546,10 +577,15 @@ function setCompact(compact) {
   settings.compact = compact;
   saveSettings();
   win.webContents.send('mode', compact);
+  applyLock(); // 鎖定只在極簡模式有效，展開後一律可以操作
   buildTrayMenu();
 }
 
 ipcMain.handle('get-state', () => state);
+ipcMain.handle('set-locked', (_e, locked) => setLocked(locked));
+// 鎖定時滑鼠移到鎖頭上就暫時接受點擊，移開就恢復穿透
+ipcMain.handle('lock-hole', (_e, over) => { if (isLocked()) win.setIgnoreMouseEvents(!over, { forward: true }); });
+ipcMain.handle('compact-menu', () => compactMenu());
 ipcMain.handle('set-compact', (_e, compact) => { setCompact(Boolean(compact)); return publicSettings(); });
 ipcMain.handle('fit-compact', (_e, width) => {
   if (!settings.compact) return;

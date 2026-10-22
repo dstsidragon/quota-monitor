@@ -93,6 +93,25 @@ body.compact #view-compact { display: flex; }
 .compact-line .err { color: var(--warn); }
 #view-compact .actions button { padding: 1px 7px; font-size: 11px; }
 #view-compact .actions .upd { color: var(--ok); border-color: currentColor; font-weight: 700; }
+
+/* 極簡模式右邊的鎖頭：鎖上後整條滑鼠穿透，只有鎖頭有反應 */
+#view-compact #btn-lock {
+  width: 26px; height: 26px; padding: 0; margin-left: 2px;
+  display: inline-grid; place-items: center;
+  border-radius: 50%; border: 1px solid transparent; background: transparent; color: var(--text);
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+#btn-lock svg {
+  width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round;
+  filter: drop-shadow(0 0 1px var(--halo, transparent)) drop-shadow(0 0 1px var(--halo, transparent));
+}
+#btn-lock rect { fill: currentColor; stroke: none; }
+#btn-lock .i-shut, body.locked #btn-lock .i-open { display: none; }
+body.locked #btn-lock .i-shut { display: block; }
+body.locked #view-compact #btn-lock { color: var(--codex); }
+#view-compact #btn-lock:hover { background: rgba(var(--veil-rgb, 29, 32, 38), 0.92); border-color: var(--line); }
+#view-compact #btn-lock:hover svg { filter: none; }
+body.locked #compact-line, body.locked #view-compact .actions > :not(#btn-lock) { pointer-events: none; }
 .row.ver { align-items: center; margin-top: 10px; }
 button:disabled { cursor: default; color: var(--muted); }
 
