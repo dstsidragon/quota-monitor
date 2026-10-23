@@ -1,10 +1,27 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, net, nativeImage, Notification, shell, safeStorage, screen, session, nativeTheme, powerMonitor, desktopCapturer } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, net, nativeImage, Notification, shell, safeStorage, screen, session, nativeTheme, powerMonitor, desktopCapturer, crashReporter } = require('electron');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { fetchClaude, fetchClaudeWeb, fetchCodex } = require('./providers');
 const { fetchStatusFeeds, fetchTibo, fetchX, fetchTweetText, mergeNews } = require('./news');
 const { medianLuma, pickBackdrop, cropRect } = require('./backdrop');
+
+// 本機紀錄：啟動、更新、錯誤都寫在資料夾 logs\main.log（只存在這台電腦，不含帳號資料），出問題時用來找原因
+let logFile = null;
+function log(...parts) {
+  const text = parts.map((p) => (p instanceof Error ? p.stack || p.message : typeof p === 'string' ? p : JSON.stringify(p))).join(' ');
+  try {
+    if (!logFile) {
+      const dir = path.join(app.getPath('userData'), 'logs');
+      fs.mkdirSync(dir, { recursive: true });
+      logFile = path.join(dir, 'main.log');
+      if (fs.existsSync(logFile) && fs.statSync(logFile).size > 512 * 1024) fs.renameSync(logFile, `${logFile}.old`);
+    }
+    fs.appendFileSync(logFile, `${new Date().toISOString()} ${text}\n`);
+  } catch { /* 寫不了紀錄也不影響使用 */ }
+}
+process.on('uncaughtException', (e) => log('uncaughtException', e));
+process.on('unhandledRejection', (e) => log('unhandledRejection', e));
 
 // 自動更新：從 GitHub Releases 下載新版，下載完跳通知，按一下就重新啟動並套用（結束時也會自動套用）。
 // 每 30 分鐘自己檢查一次，也可以從系統匣、設定手動檢查。
@@ -27,6 +44,7 @@ function setupAutoUpdate() {
     upd.status = 'dev';
     return;
   }
+  autoUpdater.logger = { info: (m) => log('[update]', m), warn: (m) => log('[update] warn', m), error: (m) => log('[update] error', m), debug: () => {} };
   const busy = () => upd.status === 'ready' || upd.status === 'downloading';
   autoUpdater.on('checking-for-update', () => { if (!busy()) setUpd({ status: 'checking' }); });
   autoUpdater.on('update-available', (info) => setUpd({ status: 'downloading', version: info.version, percent: 0 }));
@@ -39,7 +57,7 @@ function setupAutoUpdate() {
     n.show();
   });
   // 沒網路或 GitHub 暫時連不上時，下次再試
-  autoUpdater.on('error', () => { if (upd.status !== 'ready') setUpd({ status: 'error' }); });
+  autoUpdater.on('error', (e) => { log('[update] error', e); if (upd.status !== 'ready') setUpd({ status: 'error' }); });
   checkUpdate();
   setInterval(checkUpdate, 30 * MIN);
 }
@@ -53,8 +71,13 @@ function checkUpdate() {
 
 function installUpdate() {
   if (!autoUpdater || upd.status !== 'ready') return;
+  log('重新啟動並安裝', upd.version);
   app.isQuitting = true;
-  autoUpdater.quitAndInstall(true, true); // 安靜安裝，裝完自動重新開啟
+  // 先收掉系統匣圖示和視窗，讓程式馬上結束，安裝程式才不會因為檔案還被占用而失敗
+  try { if (tray) tray.destroy(); } catch { /* 已經沒有圖示 */ }
+  for (const w of BrowserWindow.getAllWindows()) w.destroy();
+  // 顯示安裝進度（不用安靜模式），裝完自動重新開啟；萬一失敗也看得到錯誤訊息
+  autoUpdater.quitAndInstall(false, true);
 }
 
 const MIN = 60 * 1000;
@@ -398,6 +421,11 @@ function createWindow(bounds) {
   });
   win.once('ready-to-show', () => { win.show(); setTimeout(sampleBackdrop, 300); });
   win.webContents.on('did-finish-load', applyLock);
+  win.webContents.on('did-fail-load', (_e, code, desc) => log('畫面載入失敗', code, desc));
+  win.webContents.on('console-message', (e, level, message) => {
+    const lv = e.level ?? level;
+    if (lv === 'error' || lv === 3) log('[畫面錯誤]', e.message ?? message);
+  });
   // 在極簡列的拖曳區按右鍵：換成自己的選單（展開、鎖定、收起），不要 Windows 的系統選單
   win.on('system-context-menu', (e) => { e.preventDefault(); compactMenu(); });
   win.on('close', (e) => {
@@ -626,24 +654,43 @@ ipcMain.handle('save-settings', (_e, patch) => {
 
 // ---------- 啟動 ----------
 
+function step(name, fn) {
+  try { fn(); } catch (e) { log(`啟動步驟 ${name} 失敗`, e); }
+}
+
 // 中文 productName 在某些 Linux 環境會讓預設路徑變成 appData 根目錄，這時改用固定資料夾
 if (path.resolve(app.getPath('userData')) === path.resolve(app.getPath('appData'))) {
   app.setPath('userData', path.join(app.getPath('appData'), 'quota-monitor'));
 }
+// 程式本身當掉時把當機檔留在本機資料夾（Crashpad），不會上傳
+crashReporter.start({ uploadToServer: false });
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', () => { if (win) { win.show(); win.focus(); } });
+  // 又開一次時叫出視窗；萬一視窗沒建起來就重建
+  app.on('second-instance', () => {
+    log('又被開啟一次，叫出視窗');
+    if (!win || win.isDestroyed()) step('window', createWindow);
+    if (win && !win.isDestroyed()) { win.show(); win.focus(); }
+  });
+  app.on('render-process-gone', (_e, _wc, d) => log('render-process-gone', d));
+  app.on('child-process-gone', (_e, d) => log('child-process-gone', d));
+  app.on('before-quit', () => log('結束'));
   app.whenReady().then(() => {
+    log(`啟動 ${app.getVersion()}`, `Windows ${os.release()}`, process.argv.slice(1).join(' '));
     if (process.platform === 'win32') app.setAppUserModelId('local.quota-monitor');
     settings = loadSettings();
+    if (settings.lastVersion !== app.getVersion()) log(`版本 ${settings.lastVersion || '?'} → ${app.getVersion()}`);
+    settings.lastVersion = app.getVersion();
+    step('save', saveSettings);
     tweetText = readJson('tweets.json', {});
-    applyTheme();
-    createWindow();
-    createTray();
-    refreshAll();
-    setupAutoUpdate();
+    // 每一步分開保護：就算某一步出錯，視窗和系統匣圖示也一定要出來，不會變成看不見的程式
+    step('theme', applyTheme);
+    step('window', createWindow);
+    step('tray', createTray);
+    step('refresh', refreshAll);
+    step('update', setupAutoUpdate);
     // 睡眠喚醒或解鎖後網路要一點時間才會通，等幾秒再全部更新
     const wake = () => setTimeout(refreshAll, 8000);
     powerMonitor.on('resume', wake);
