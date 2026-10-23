@@ -4,7 +4,7 @@
 
 ## 使用
 
-1. 從 [Releases](https://github.com/dstsidragon/quota-monitor/releases/latest) 下載 `QuotaMonitor-Setup-x.y.z.exe` 安裝（裝在使用者資料夾，不需要系統管理員）。檔案沒有數位簽章，第一次執行若出現 SmartScreen，按「其他資訊 → 仍要執行」。之後有新版會自動下載，重新啟動即套用。
+1. 從 [Releases](https://github.com/dstsidragon/quota-monitor/releases/latest) 下載 `QuotaMonitor-Setup-x.y.z.exe` 安裝（裝在使用者資料夾，不需要系統管理員）。檔案沒有數位簽章，第一次執行若出現 SmartScreen，按「其他資訊 → 仍要執行」；開著 Windows「智慧型應用程式控制」的電腦會直接擋下安裝檔。之後有新版會自動下載，重新啟動即套用。
 2. 視窗會出現在螢幕右下角；按 ✕ 收進系統匣，點系統匣圖示再叫出來，右鍵選單可「立即更新」或「結束」。
 3. 滑鼠停在系統匣圖示上，會顯示兩邊剩餘百分比摘要。
 4. 按標題列的 ▁ 或系統匣右鍵「極簡模式」縮成一行。一行最右邊只有一個鎖頭：點一下鎖定後，整條對滑鼠完全沒反應（不會變不透明、不能拖曳，點擊直接穿透到後面的視窗），只有鎖頭能點來解鎖；系統匣右鍵也能切換鎖定。沒鎖定時在一行上按右鍵可以展開成完整視窗或收到系統匣。一行裡會列出每個額度視窗，滑鼠停著可看完整資訊。tibo 24 小時內宣布過 reset 時，最右邊會多一個「tibo reset」提示，沒點開過會閃，點一下打開貼文。
@@ -28,6 +28,7 @@
 - 憑證只在本機讀取，不會刷新也不會寫回，避免把 CLI 登出。token 過期時會提示「開一下 CLI」，CLI 啟動時會自己更新。
 - 預設每 5 分鐘查一次額度、每 15 分鐘查一次公告；被限流（429）時自動拉長間隔。
 - 新版本每 30 分鐘自動檢查並在背景下載，下載好後上方（極簡模式在右邊）會出現「更新」按鈕，按一下就重新啟動套用；系統匣右鍵和設定裡也能「檢查新版本」。
+- 更新只下載新的程式內容（Release 裡的 `bundle.json` 與 `quota-monitor-x.y.z.asar`，比對 SHA-512 後存到資料夾 `bundles\`），不跑安裝程式、不換執行檔，所以開著「智慧型應用程式控制」也能更新。新版第一次啟動沒能開出畫面，下次啟動會自動退回上一版，並跳過那一版。
 - tibo 的 reset 貼文每分鐘檢查一次（tokenusage.dev 偵測到貼文通常只差 30 秒左右），列表與通知會顯示貼文原文（透過 X 公開的 oEmbed 取得）；一偵測到就立刻重查 Codex 額度，3 分鐘後再查一次。
 - 狀態頁與 X API 依「公告更新間隔」檢查。電腦關機或睡眠時發的 reset 公告，開機後 24 小時內仍會補通知。
 - 出現新的 reset 公告、某個額度視窗的使用率突然下降 15% 以上（代表被 reset），或剩餘低於設定的百分比（預設 10%），會跳 Windows 通知。
@@ -43,5 +44,5 @@ npm start          # 開發模式執行
 npm test           # 解析器與抓取邏輯測試
 npm run dist       # 在 Windows 上打包安裝檔
 
-發布新版：改 package.json 的 version，推上 main，GitHub Actions 會在 Windows 上打包並發布到 Releases，已安裝的小工具會自動更新。
+發布新版：改 package.json 的 version，推上 main，GitHub Actions 會在 Windows 上打包，把安裝檔和程式內容更新檔（`scripts/make-bundle.js` 產生）發布到 Releases，已安裝的小工具會自動更新。
 ```

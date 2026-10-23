@@ -160,3 +160,27 @@ test('背景亮度：中位數不受少量文字影響、中間值不切換', ()
     { x: 0, y: 10, width: 200, height: 11 },
   );
 });
+
+const { cmpVersion, pickBundle } = require('../src/bundles');
+
+test('程式內容更新：挑最新、沒壞掉、比內建新的版本', () => {
+  assert.ok(cmpVersion('0.10.0', '0.9.9') > 0);
+  assert.strictEqual(cmpVersion('0.7.0', '0.7.0'), 0);
+  const files = ['0.6.9.asar', '0.7.1.asar', '0.7.2.asar', '0.7.3.asar.part', 'state.json'];
+  // 第一次試 0.7.2
+  let r = pickBundle({}, files, '0.7.0');
+  assert.strictEqual(r.version, '0.7.2');
+  assert.strictEqual(r.state.trying, '0.7.2');
+  // 0.7.2 沒能確認就又啟動：當成壞掉，退回 0.7.1
+  r = pickBundle(r.state, files, '0.7.0');
+  assert.strictEqual(r.version, '0.7.1');
+  assert.deepStrictEqual(r.state.bad, ['0.7.2']);
+  // 已確認沒問題的版本，再開一次（例如小工具開著時又點捷徑）不會被誤判
+  r = pickBundle({ ok: '0.7.2', trying: null, bad: [] }, files, '0.7.0');
+  assert.strictEqual(r.state.trying, null);
+  r = pickBundle(r.state, files, '0.7.0');
+  assert.strictEqual(r.version, '0.7.2');
+  assert.deepStrictEqual(r.state.bad, []);
+  // 都不比內建新就用內建
+  assert.strictEqual(pickBundle({}, ['0.6.9.asar'], '0.7.0').version, null);
+});

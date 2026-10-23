@@ -5,6 +5,9 @@ const path = require('path');
 const { fetchClaude, fetchClaudeWeb, fetchCodex } = require('./providers');
 const { fetchStatusFeeds, fetchTibo, fetchX, fetchTweetText, mergeNews } = require('./news');
 const { medianLuma, pickBackdrop, cropRect } = require('./backdrop');
+const { cmpVersion } = require('./bundles');
+const crypto = require('crypto');
+const ofs = require('original-fs'); // 讀寫 .asar 檔本身時用，不要被當成資料夾
 
 // 本機紀錄：啟動、更新、錯誤都寫在資料夾 logs\main.log（只存在這台電腦，不含帳號資料），出問題時用來找原因
 let logFile = null;
@@ -23,9 +26,12 @@ function log(...parts) {
 process.on('uncaughtException', (e) => log('uncaughtException', e));
 process.on('unhandledRejection', (e) => log('unhandledRejection', e));
 
-// 自動更新：從 GitHub Releases 下載新版，下載完跳通知，按一下就重新啟動並套用（結束時也會自動套用）。
+// 自動更新：只下載新版的程式內容（bundles\<版本>.asar），不跑安裝程式、不換執行檔，
+// 所以不會被 Windows 智慧型應用程式控制擋下。下載好按一下就重新啟動，由 boot.js 載入新版。
 // 每 30 分鐘自己檢查一次，也可以從系統匣、設定手動檢查。
-let autoUpdater = null;
+const APP_VERSION = require('../package.json').version; // 這份程式內容的版本（不是執行檔的版本）
+const UPDATE_INFO_URL = 'https://github.com/dstsidragon/quota-monitor/releases/latest/download/bundle.json';
+const bundle = global.quotaBundle || null; // boot.js 交代的資訊；直接用 main.js 啟動（開發時）就沒有
 // status：idle | checking | downloading | ready | latest | error | dev（開發版不更新）
 const upd = { status: 'idle', version: null, percent: 0 };
 function setUpd(patch) {
@@ -37,47 +43,93 @@ function setUpd(patch) {
 }
 
 function setupAutoUpdate() {
-  if (!app.isPackaged) { upd.status = 'dev'; return; }
-  try {
-    ({ autoUpdater } = require('electron-updater'));
-  } catch {
-    upd.status = 'dev';
-    return;
-  }
-  autoUpdater.logger = { info: (m) => log('[update]', m), warn: (m) => log('[update] warn', m), error: (m) => log('[update] error', m), debug: () => {} };
-  const busy = () => upd.status === 'ready' || upd.status === 'downloading';
-  autoUpdater.on('checking-for-update', () => { if (!busy()) setUpd({ status: 'checking' }); });
-  autoUpdater.on('update-available', (info) => setUpd({ status: 'downloading', version: info.version, percent: 0 }));
-  autoUpdater.on('download-progress', (p) => setUpd({ status: 'downloading', percent: Math.floor(p.percent || 0) }));
-  autoUpdater.on('update-not-available', () => { if (!busy()) setUpd({ status: 'latest' }); });
-  autoUpdater.on('update-downloaded', (info) => {
-    setUpd({ status: 'ready', version: info.version, percent: 100 });
-    const n = new Notification({ title: `額度監控器 ${info.version} 已下載`, body: '點這裡重新啟動並更新，或下次結束時自動套用。' });
-    n.on('click', installUpdate);
-    n.show();
-  });
-  // 沒網路或 GitHub 暫時連不上時，下次再試
-  autoUpdater.on('error', (e) => { log('[update] error', e); if (upd.status !== 'ready') setUpd({ status: 'error' }); });
-  checkUpdate();
+  if (!app.isPackaged || !bundle) { upd.status = 'dev'; return; }
+  setTimeout(checkUpdate, 10 * 1000);
   setInterval(checkUpdate, 30 * MIN);
 }
 
 // 已經下載好就直接重新啟動套用；否則馬上檢查（有新版會自動下載）
-function checkUpdate() {
+async function checkUpdate() {
   if (upd.status === 'ready') return installUpdate();
-  if (!autoUpdater || upd.status === 'checking' || upd.status === 'downloading') return;
-  autoUpdater.checkForUpdates().catch(() => {});
+  if (['checking', 'downloading', 'dev'].includes(upd.status)) return;
+  setUpd({ status: 'checking' });
+  try {
+    const res = await fetchImpl(UPDATE_INFO_URL, { headers: { Accept: 'application/json' } });
+    if (!res.ok) throw new Error(`更新資訊回應 ${res.status}`);
+    const info = await res.json();
+    if (!/^\d+\.\d+\.\d+$/.test(info.version || '') || !info.file || !info.sha512) throw new Error('更新資訊格式不對');
+    if (cmpVersion(info.version, APP_VERSION) <= 0) return setUpd({ status: 'latest' });
+    // 這一版之前開不起來、被退回舊版過，就不再下載它，等下一版
+    if (bundleState().bad?.includes(info.version)) { log('[update] 略過開不起來的版本', info.version); return setUpd({ status: 'latest' }); }
+    log('[update] 發現新版', info.version);
+    setUpd({ status: 'downloading', version: info.version, percent: 0 });
+    const url = `https://github.com/dstsidragon/quota-monitor/releases/download/v${info.version}/${encodeURIComponent(info.file)}`;
+    const data = await downloadWithProgress(url, info.size);
+    const sha = crypto.createHash('sha512').update(data).digest('base64');
+    if (sha !== info.sha512) throw new Error('下載的檔案檢查碼不符');
+    // 先寫成暫存檔再改名，避免半個檔案被當成新版載入
+    const target = path.join(bundle.dir, `${info.version}.asar`);
+    ofs.mkdirSync(bundle.dir, { recursive: true });
+    ofs.writeFileSync(`${target}.part`, data);
+    ofs.renameSync(`${target}.part`, target);
+    log('[update] 下載完成', info.version);
+    setUpd({ status: 'ready', version: info.version, percent: 100 });
+    const n = new Notification({ title: `額度監控器 ${info.version} 已下載`, body: '點這裡重新啟動並更新，或下次開啟時自動套用。' });
+    n.on('click', installUpdate);
+    n.show();
+  } catch (e) {
+    // 沒網路或 GitHub 暫時連不上時，下次再試
+    log('[update] 失敗', e);
+    setUpd({ status: 'error' });
+  }
+}
+
+async function downloadWithProgress(url, size) {
+  const res = await fetchImpl(url);
+  if (!res.ok) throw new Error(`下載回應 ${res.status}`);
+  const total = Number(res.headers.get('content-length')) || size || 0;
+  const reader = res.body.getReader();
+  const chunks = [];
+  let got = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(Buffer.from(value));
+    got += value.length;
+    if (total) setUpd({ percent: Math.min(99, Math.floor((got / total) * 100)) });
+  }
+  return Buffer.concat(chunks);
 }
 
 function installUpdate() {
-  if (!autoUpdater || upd.status !== 'ready') return;
-  log('重新啟動並安裝', upd.version);
+  if (upd.status !== 'ready') return;
+  log('重新啟動並套用', upd.version);
   app.isQuitting = true;
-  // 先收掉系統匣圖示和視窗，讓程式馬上結束，安裝程式才不會因為檔案還被占用而失敗
-  try { if (tray) tray.destroy(); } catch { /* 已經沒有圖示 */ }
-  for (const w of BrowserWindow.getAllWindows()) w.destroy();
-  // 顯示安裝進度（不用安靜模式），裝完自動重新開啟；萬一失敗也看得到錯誤訊息
-  autoUpdater.quitAndInstall(false, true);
+  app.relaunch();
+  app.exit(0);
+}
+
+function bundleState() {
+  try { return JSON.parse(ofs.readFileSync(bundle.stateFile, 'utf8')); } catch { return {}; }
+}
+
+// 新版成功開出畫面後，告訴 boot.js 這版沒問題，並清掉用不到的舊版
+function markBundleGood() {
+  if (!bundle) return;
+  try {
+    const st = bundleState();
+    if (st.ok !== APP_VERSION || st.trying) {
+      if (st.trying === APP_VERSION) log('新版啟動成功', APP_VERSION);
+      ofs.writeFileSync(bundle.stateFile, JSON.stringify({ ...st, ok: APP_VERSION, trying: null }));
+    }
+  } catch { /* 沒有紀錄檔就算了 */ }
+  try {
+    const bad = bundleState().bad || [];
+    for (const f of ofs.readdirSync(bundle.dir)) {
+      const m = /^(\d+\.\d+\.\d+)\.asar(\.part)?$/.exec(f);
+      if (m && (cmpVersion(m[1], APP_VERSION) < 0 || bad.includes(m[1]))) ofs.unlinkSync(path.join(bundle.dir, f));
+    }
+  } catch { /* 舊檔刪不掉下次再刪 */ }
 }
 
 const MIN = 60 * 1000;
@@ -421,6 +473,7 @@ function createWindow(bounds) {
   });
   win.once('ready-to-show', () => { win.show(); setTimeout(sampleBackdrop, 300); });
   win.webContents.on('did-finish-load', applyLock);
+  win.webContents.once('did-finish-load', markBundleGood);
   win.webContents.on('did-fail-load', (_e, code, desc) => log('畫面載入失敗', code, desc));
   win.webContents.on('console-message', (e, level, message) => {
     const lv = e.level ?? level;
@@ -560,7 +613,7 @@ function buildTrayMenu() {
     ] }] : []),
     { type: 'separator' },
     ...(upd.status === 'dev' ? [] : [updateMenuItem()]),
-    { label: `版本 ${app.getVersion()}`, enabled: false },
+    { label: `版本 ${APP_VERSION}`, enabled: false },
     { type: 'separator' },
     { label: '結束', click: () => { app.isQuitting = true; app.quit(); } },
   ]));
@@ -624,7 +677,7 @@ ipcMain.handle('fit-compact', (_e, width) => {
 });
 ipcMain.handle('claude-login', () => openClaudeLogin());
 ipcMain.handle('claude-logout', () => logoutClaudeWeb());
-ipcMain.handle('get-settings', () => ({ ...publicSettings(), version: app.getVersion(), update: upd, blurAvailable: GLASS }));
+ipcMain.handle('get-settings', () => ({ ...publicSettings(), version: APP_VERSION, update: upd, blurAvailable: GLASS }));
 ipcMain.handle('install-update', () => installUpdate());
 ipcMain.handle('check-update', () => checkUpdate());
 ipcMain.handle('refresh', () => refreshAll());
@@ -678,11 +731,11 @@ if (!app.requestSingleInstanceLock()) {
   app.on('child-process-gone', (_e, d) => log('child-process-gone', d));
   app.on('before-quit', () => log('結束'));
   app.whenReady().then(() => {
-    log(`啟動 ${app.getVersion()}`, `Windows ${os.release()}`, process.argv.slice(1).join(' '));
+    log(`啟動 ${APP_VERSION}`, `Windows ${os.release()}`, process.argv.slice(1).join(' '));
     if (process.platform === 'win32') app.setAppUserModelId('local.quota-monitor');
     settings = loadSettings();
-    if (settings.lastVersion !== app.getVersion()) log(`版本 ${settings.lastVersion || '?'} → ${app.getVersion()}`);
-    settings.lastVersion = app.getVersion();
+    if (settings.lastVersion !== APP_VERSION) log(`版本 ${settings.lastVersion || '?'} → ${APP_VERSION}`);
+    settings.lastVersion = APP_VERSION;
     step('save', saveSettings);
     tweetText = readJson('tweets.json', {});
     // 每一步分開保護：就算某一步出錯，視窗和系統匣圖示也一定要出來，不會變成看不見的程式

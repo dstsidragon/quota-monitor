@@ -1,7 +1,7 @@
 name: Release
 
 # main 上的 package.json 版本號變了，就在 Windows 上打包並發布到 GitHub Releases；
-# 已安裝的小工具會從這裡自動更新。同一個版本已發布過就跳過。
+# 已安裝的小工具會讀 bundle.json，只下載新的程式內容（.asar）來更新。同一個版本已發布過就跳過。
 on:
   push:
     branches: [main]
@@ -23,8 +23,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VER=$(node -p "require('./package.json').version")
-          # 安裝檔已經在 Release 裡才算發布過；只有半套的 Release 會重新上傳
-          if gh release view "v$VER" --json assets -q '.assets[].name' 2>/dev/null | grep -q '^QuotaMonitor-Setup-.*\.exe$'; then echo "skip=true" >> "$GITHUB_OUTPUT"; else echo "skip=false" >> "$GITHUB_OUTPUT"; fi
+          # 安裝檔和 bundle.json 都已經在 Release 裡才算發布過；只有半套的 Release 會重新上傳
+          ASSETS=$(gh release view "v$VER" --json assets -q '.assets[].name' 2>/dev/null || true)
+          if echo "$ASSETS" | grep -q '^QuotaMonitor-Setup-.*\.exe$' && echo "$ASSETS" | grep -qx 'bundle.json'; then echo "skip=true" >> "$GITHUB_OUTPUT"; else echo "skip=false" >> "$GITHUB_OUTPUT"; fi
       - uses: actions/setup-node@v4
         if: steps.check.outputs.skip == 'false'
         with:
@@ -43,11 +44,20 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VER=$(node -p "require('./package.json').version")
-          gh release create "v$VER" --draft --title "v$VER" --notes "額度監控器 $VER" --target "$GITHUB_SHA"
+          gh release view "v$VER" >/dev/null 2>&1 || gh release create "v$VER" --draft --title "v$VER" --notes "額度監控器 $VER" --target "$GITHUB_SHA"
       - if: steps.check.outputs.skip == 'false'
         run: npx electron-builder --win nsis --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: 上傳程式內容更新檔
+        if: steps.check.outputs.skip == 'false'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VER=$(node -p "require('./package.json').version")
+          node scripts/make-bundle.js
+          gh release upload "v$VER" "dist/quota-monitor-$VER.asar" dist/bundle.json --clobber
       - name: 公開 Release
         if: steps.check.outputs.skip == 'false'
         shell: bash
