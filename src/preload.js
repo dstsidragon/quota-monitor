@@ -21,5 +21,7 @@ contextBridge.exposeInMainWorld('quota', {
   onUpdate: (cb) => ipcRenderer.on('update', (_e, v) => cb(v)),
   onHover: (cb) => ipcRenderer.on('hover', (_e, h) => cb(h)),
   onLook: (cb) => ipcRenderer.on('look', (_e, l) => cb(l)),
+  zones: (z) => ipcRenderer.send('zones', z),
+  onBackdrop: (cb) => ipcRenderer.on('backdrop', (_e, t) => cb(t)),
   onState: (cb) => ipcRenderer.on('state', (_e, s) => cb(s)),
 });

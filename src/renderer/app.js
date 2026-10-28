@@ -101,14 +101,14 @@ function compactProvider(name, cls, s) {
   if (!s) body = '<span class="w">讀取中</span>';
   else if (!s.windows || !s.windows.length) body = '<span class="err">讀不到，點 ▢ 看原因</span>';
   else {
-    body = s.windows.map((w) => {
+    body = s.windows.map((w, i) => {
       const left = Math.max(0, Math.min(100, Math.round(100 - w.usedPercent)));
       const reset = w.resetsAt ? ` <small>${shortCountdown(w.resetsAt)}</small>` : '';
-      return `<span class="w"><span class="lbl">${esc(shortLabel(w.label))}</span><b data-left="${left}">${left}%</b>${reset}</span>`;
+      return `<span class="w" data-zone="${cls}${i + 1}"><span class="lbl">${esc(shortLabel(w.label))}</span><b data-left="${left}">${left}%</b>${reset}</span>`;
     }).join('');
     if (s.error || s.note) body += '<span class="err">!</span>';
   }
-  return `<span class="prov"><span class="who"><span class="dot ${cls}"></span><span class="name">${name}</span></span>${body}</span>`;
+  return `<span class="prov" data-zone="${cls}"><span class="who" data-zone="${cls}0"><span class="dot ${cls}"></span><span class="name">${name}</span></span>${body}</span>`;
 }
 
 // tibo 24 小時內的 reset 公告，在極簡列上顯示提示；點開過就不再閃
@@ -132,12 +132,13 @@ function tiboHint() {
   if (!i) return '';
   const fresh = seenTibo() !== (i.id || i.url);
   const tip = `tibo ${fmtTime(i.at)} 宣布 Codex 額度 reset${i.kind ? `（${i.kind}）` : ''}\n${i.title}\n\n點一下打開貼文`;
-  return `<span class="tibo${fresh ? ' new' : ''}" data-url="${esc(i.url)}" data-id="${esc(i.id || i.url)}" title="${esc(tip)}"><i></i>tibo reset ${shortAgo(i.at)}</span>`;
+  return `<span class="tibo${fresh ? ' new' : ''}" data-zone="tibo" data-url="${esc(i.url)}" data-id="${esc(i.id || i.url)}" title="${esc(tip)}"><i></i>tibo reset ${shortAgo(i.at)}</span>`;
 }
 
 function renderCompact() {
   const line = $('#compact-line');
-  line.innerHTML = compactProvider('Claude', 'claude', current.claude) + '<span class="sep"></span>' + compactProvider('Codex', 'codex', current.codex) + tiboHint();
+  line.innerHTML = compactProvider('Claude', 'claude', current.claude) + '<span class="sep" data-zone="sep"></span>' + compactProvider('Codex', 'codex', current.codex) + tiboHint();
+  applyTones();
   line.querySelectorAll('b[data-left]').forEach((el) => { el.style.color = barColor(Number(el.dataset.left)); });
   const tip = [];
   for (const [n, s] of [['Claude', current.claude], ['Codex', current.codex]]) {
@@ -146,7 +147,57 @@ function renderCompact() {
   }
   line.title = locked ? '' : tip.join('\n'); // 鎖定時連提示框都不跳
   if (document.body.classList.contains('compact')) fitCompact();
+  requestAnimationFrame(reportZones);
 }
+
+// 背景深淺：整體配色跟著系統的深淺色（主程式會依背後桌面切換），
+// 極簡列每一段再依自己背後的亮度各自上色，字不夠清楚的那一段墊一層半透明底
+const lightScheme = matchMedia('(prefers-color-scheme: light)');
+const syncScheme = () => document.body.classList.toggle('tone-light', lightScheme.matches);
+lightScheme.addEventListener('change', syncScheme);
+syncScheme();
+
+// 每一組（Claude、Codex、tibo、鎖頭）和組裡的每個項目都各量一次：
+// 每個項目在自己的配色下都清楚，就各自上色（例如左半深色字、右半白字）；
+// 只要有一項不夠清楚（例如剛好跨在亮暗交界上），就整組墊一層底、統一用那一組的配色，看起來是一顆完整的膠囊
+let tones = {};
+const zoneEls = () => [...document.querySelectorAll('#view-compact [data-zone]')];
+function setTone(el, t = {}, plate = 0) {
+  el.classList.toggle('tone-light', t.tone === 'light');
+  el.classList.toggle('tone-dark', t.tone === 'dark');
+  el.classList.toggle('plate', plate > 0);
+  el.classList.toggle('strong', plate > 1);
+}
+function applyTones() {
+  document.body.classList.toggle('plate', Boolean(tones.all && tones.all.plate));
+  for (const group of document.querySelectorAll('#compact-line > [data-zone], #view-compact .actions[data-zone]')) {
+    const t = tones[group.dataset.zone] || {};
+    const items = [...group.querySelectorAll('[data-zone]')];
+    if (group.dataset.zone === 'sep') { setTone(group, t); continue; }
+    const plate = items.length ? Math.max(...items.map((el) => (tones[el.dataset.zone] || {}).plate || 0)) : t.plate || 0;
+    if (plate || !items.length) {
+      setTone(group, t, plate);
+      items.forEach((el) => setTone(el));
+    } else {
+      setTone(group);
+      items.forEach((el) => setTone(el, tones[el.dataset.zone]));
+    }
+  }
+}
+window.quota.onBackdrop((t) => { tones = t || {}; applyTones(); });
+
+// 告訴主程式極簡列每一段的左右位置（視窗寬度的比例），好分段量背後的亮度
+let lastZones = '';
+function reportZones() {
+  const w = window.innerWidth || 1;
+  const zones = document.body.classList.contains('compact') ? zoneEls().map((el) => {
+    const r = el.getBoundingClientRect();
+    return { key: el.dataset.zone, from: +(r.left / w).toFixed(3), to: +(r.right / w).toFixed(3) };
+  }) : [];
+  const json = JSON.stringify(zones);
+  if (json !== lastZones) { lastZones = json; window.quota.zones(zones); }
+}
+window.addEventListener('resize', () => requestAnimationFrame(reportZones));
 
 // 依內容調整極簡列的寬度
 let lastFit = 0;
@@ -214,6 +265,7 @@ function applyMode(compact) {
   document.body.classList.toggle('compact', compact);
   lastFit = 0;
   if (compact) requestAnimationFrame(fitCompact);
+  requestAnimationFrame(reportZones);
 }
 $('#btn-compact').addEventListener('click', () => window.quota.setCompact(true));
 // 極簡模式只留一個鎖頭：鎖上後整條滑鼠穿透，只有鎖頭有反應；展開、收起在右鍵選單和系統匣

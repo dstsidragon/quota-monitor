@@ -4,7 +4,7 @@ const os = require('os');
 const path = require('path');
 const { fetchClaude, fetchClaudeWeb, fetchCodex } = require('./providers');
 const { fetchStatusFeeds, fetchTibo, fetchX, fetchTweetText, mergeNews } = require('./news');
-const { medianLuma, pickBackdrop, cropRect } = require('./backdrop');
+const { regionStats, pickTone, cropRect } = require('./backdrop');
 const { cmpVersion } = require('./bundles');
 const crypto = require('crypto');
 const ofs = require('original-fs'); // 讀寫 .asar 檔本身時用，不要被當成資料夾
@@ -473,6 +473,7 @@ function createWindow(bounds) {
   });
   win.once('ready-to-show', () => { win.show(); setTimeout(sampleBackdrop, 300); });
   win.webContents.on('did-finish-load', applyLock);
+  win.webContents.on('did-finish-load', sendTones);
   win.webContents.once('did-finish-load', markBundleGood);
   win.webContents.on('did-fail-load', (_e, code, desc) => log('畫面載入失敗', code, desc));
   win.webContents.on('console-message', (e, level, message) => {
@@ -542,30 +543,55 @@ function startHoverWatch() {
   }, 120);
 }
 
-// 文字顏色「自動」：每 3 秒看一下視窗背後的亮度（滑鼠在上面時底色不透明，那時不看）
+// 文字顏色「自動」：每 3 秒看一下視窗背後的亮度（滑鼠在上面時底色不透明，那時不看）。
+// 整體的深淺決定展開視窗的配色；極簡列另外分段（每個項目、每一組）判斷，各自上色、必要時墊底（見 backdrop.js）。
 let hoverChangedAt = 0;
 let backdrop = null;
 let sampling = false;
+let shot = null; // 最近一次擷取到的視窗背後畫面（縮圖，只留在記憶體）
+let zones = []; // 極簡列每一段的左右位置，由畫面回報
+let tones = {}; // all＝整體，其他是各段：{ tone: 'light' | 'dark', plate }
+let tonesLogged = '';
 function applyTheme() {
   nativeTheme.themeSource = settings.theme === 'auto' ? (backdrop || 'system') : settings.theme;
+  sendTones();
+}
+function sendTones() {
+  if (win && !win.isDestroyed()) win.webContents.send('backdrop', settings.theme === 'auto' ? tones : {});
+}
+function judgeBackdrop() {
+  if (!shot) return;
+  const { bgra, width, height } = shot;
+  const next = { all: pickTone(regionStats(bgra, width, height), tones.all) };
+  for (const z of zones) next[z.key] = pickTone(regionStats(bgra, width, height, z.from, z.to), tones[z.key]);
+  tones = next;
+  const summary = Object.entries(tones).map(([k, t]) => `${k}=${t.tone}${t.plate ? `+底${t.plate}` : ''}`).join(' ');
+  if (summary !== tonesLogged) { tonesLogged = summary; log('背景', summary); }
+  if (tones.all.tone && tones.all.tone !== backdrop) { backdrop = tones.all.tone; applyTheme(); } else sendTones();
 }
 async function sampleBackdrop() {
   if (settings.theme !== 'auto' || sampling || !win || win.isDestroyed() || !win.isVisible()) return;
   if (hovering || Date.now() - hoverChangedAt < 1500) return;
   sampling = true;
+  const hide = process.platform === 'win32';
   try {
     const b = win.getBounds();
     const d = screen.getDisplayMatching(b);
+    // 擷取的那一下先把小工具自己排除在畫面擷取之外，量到的才是背後真正的桌面，
+    // 字和墊的底也不會影響下一次判斷（畫面上看不出差別）
+    if (hide) { win.setContentProtection(true); await new Promise((r) => setTimeout(r, 80)); }
     const sources = await desktopCapturer.getSources({
       types: ['screen'],
       thumbnailSize: { width: Math.round(d.bounds.width / 4), height: Math.round(d.bounds.height / 4) },
     });
     const src = sources.find((x) => x.display_id === String(d.id)) || (sources.length === 1 ? sources[0] : null);
     if (!src || src.thumbnail.isEmpty() || hovering) return;
-    const rect = cropRect(b, d.bounds, src.thumbnail.getSize());
-    const next = pickBackdrop(medianLuma(src.thumbnail.crop(rect).toBitmap()), backdrop);
-    if (next !== backdrop) { backdrop = next; applyTheme(); }
+    const img = src.thumbnail.crop(cropRect(b, d.bounds, src.thumbnail.getSize()));
+    const size = img.getSize();
+    shot = { bgra: img.toBitmap(), width: size.width, height: size.height };
+    judgeBackdrop();
   } catch { /* 擷取不到就維持現在的顏色 */ } finally {
+    if (hide && win && !win.isDestroyed()) win.setContentProtection(false);
     sampling = false;
   }
 }
@@ -668,6 +694,13 @@ ipcMain.handle('set-locked', (_e, locked) => setLocked(locked));
 ipcMain.handle('lock-hole', (_e, over) => { if (isLocked()) win.setIgnoreMouseEvents(!over, { forward: true }); });
 ipcMain.handle('compact-menu', () => compactMenu());
 ipcMain.handle('set-compact', (_e, compact) => { setCompact(Boolean(compact)); return publicSettings(); });
+// 極簡列每一段的位置變了（內容或寬度改變），用最近一次的畫面重新判斷各段的字色
+ipcMain.on('zones', (_e, list) => {
+  zones = (Array.isArray(list) ? list : []).slice(0, 24)
+    .filter((z) => z && /^[a-z0-9]+$/.test(z.key) && Number.isFinite(z.from) && Number.isFinite(z.to))
+    .map((z) => ({ key: z.key, from: Math.max(0, Math.min(1, z.from)), to: Math.max(0, Math.min(1, z.to)) }));
+  judgeBackdrop();
+});
 ipcMain.handle('fit-compact', (_e, width) => {
   if (!settings.compact) return;
   const w = Math.max(260, Math.min(1000, Math.round(width)));

@@ -143,18 +143,33 @@ test('fetchClaudeWeb 選有 chat 的組織並讀 usage', async () => {
   await assert.rejects(fetchClaudeWeb(async () => res(403, {})), (e) => e.kind === 'web-login');
 });
 
-const { medianLuma, pickBackdrop, cropRect } = require('../src/backdrop');
+const { regionStats, pickTone, cropRect } = require('../src/backdrop');
 
-test('背景亮度：中位數不受少量文字影響、中間值不切換', () => {
-  const px = (n, v) => Buffer.from(Array.from({ length: n }, () => [v, v, v, 255]).flat());
-  // 80% 深色桌布 + 20% 白色文字 → 仍判斷為暗
-  const dark = medianLuma(Buffer.concat([px(80, 20), px(20, 255)]));
-  assert.ok(dark < 0.2);
-  assert.equal(pickBackdrop(dark, 'light'), 'dark');
-  assert.equal(pickBackdrop(medianLuma(px(10, 240)), 'dark'), 'light');
-  assert.equal(pickBackdrop(0.5, 'dark'), 'dark');
-  assert.equal(pickBackdrop(0.5, 'light'), 'light');
-  assert.equal(pickBackdrop(null, 'light'), 'light');
+test('背景亮度：分段判斷字色，太花才墊底', () => {
+  // 一張 20×4 的截圖：左半灰藍色視窗、右半深藍桌布（使用者截圖裡的顏色）
+  const w = 20, h = 4;
+  const img = Buffer.alloc(w * h * 4);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const [r, g, b] = x < 10 ? [136, 160, 176] : [0, 40, 136];
+    img.set([b, g, r, 255], (y * w + x) * 4);
+  }
+  assert.deepEqual(pickTone(regionStats(img, w, h, 0, 0.5)), { tone: 'light', plate: 0 });
+  assert.deepEqual(pickTone(regionStats(img, w, h, 0.5, 1)), { tone: 'dark', plate: 0 });
+  // 跨在兩種背景上：哪種字都有一邊看不清楚，墊底
+  assert.equal(pickTone(regionStats(img, w, h, 0.3, 0.7)).plate, 2);
+  // 黑白條紋（很花的桌布）也墊底
+  const stripes = Buffer.from(Array.from({ length: 40 }, (_, i) => (i % 2 ? [235, 235, 235, 255] : [25, 25, 25, 255])).flat());
+  assert.equal(pickTone(regionStats(stripes, 40, 1)).plate, 2);
+  // 對比差不多時維持原本的字色；墊了底要明顯夠清楚才拿掉
+  const mid = { lum: 0.186, lo: 0.186, hi: 0.186 };
+  assert.equal(pickTone(mid, { tone: 'light' }).tone, 'light');
+  assert.equal(pickTone(mid, { tone: 'dark' }).tone, 'dark');
+  const ok55 = { lum: 0.14, lo: 0.14, hi: 0.14 }; // 白字對比約 5.5
+  assert.equal(pickTone(ok55, { tone: 'dark', plate: 0 }).plate, 0);
+  assert.equal(pickTone(ok55, { tone: 'dark', plate: 1 }).plate, 1);
+  assert.equal(pickTone(ok55, { tone: 'dark', plate: 2 }).plate, 1);
+  assert.equal(pickTone({ lum: 0.1, lo: 0.1, hi: 0.1 }, { tone: 'dark', plate: 1 }).plate, 0); // 對比 7
+  assert.deepEqual(pickTone(null, { tone: 'dark', plate: 0 }), { tone: 'dark', plate: 0 });
   assert.deepEqual(
     cropRect({ x: 1900, y: 40, width: 800, height: 42 }, { x: 1920, y: 0, width: 1920, height: 1080 }, { width: 480, height: 270 }),
     { x: 0, y: 10, width: 200, height: 11 },
