@@ -4,7 +4,7 @@ const os = require('os');
 const path = require('path');
 const { fetchClaude, fetchClaudeWeb, fetchCodex } = require('./providers');
 const { fetchStatusFeeds, fetchTibo, fetchX, fetchTweetText, mergeNews } = require('./news');
-const { regionStats, pickTone, cropRect } = require('./backdrop');
+const { regionStats, pickTone, cropRect, bandRects } = require('./backdrop');
 const { cmpVersion } = require('./bundles');
 const crypto = require('crypto');
 const ofs = require('original-fs'); // 讀寫 .asar 檔本身時用，不要被當成資料夾
@@ -469,9 +469,9 @@ function createWindow(bounds) {
   let moveTimer;
   win.on('moved', () => {
     clearTimeout(moveTimer);
-    moveTimer = setTimeout(() => { const b = win.getBounds(); settings.pos = { x: b.x, y: b.y }; saveSettings(); sampleBackdrop(); }, 500);
+    moveTimer = setTimeout(() => { const b = win.getBounds(); settings.pos = { x: b.x, y: b.y }; saveSettings(); sampleBackdrop(true); }, 500);
   });
-  win.once('ready-to-show', () => { win.show(); setTimeout(sampleBackdrop, 300); });
+  win.once('ready-to-show', () => { win.show(); setTimeout(() => sampleBackdrop(true), 300); });
   win.webContents.on('did-finish-load', applyLock);
   win.webContents.on('did-finish-load', sendTones);
   win.webContents.once('did-finish-load', markBundleGood);
@@ -551,7 +551,8 @@ let sampling = false;
 let shot = null; // 最近一次擷取到的視窗背後畫面（縮圖，只留在記憶體）
 let zones = []; // 極簡列每一段的左右位置，由畫面回報
 let tones = {}; // all＝整體，其他是各段：{ tone: 'light' | 'dark', plate }
-let tonesLogged = '';
+let pendingTones = ''; // 上一次量到、還沒套用的結果
+let settleNow = true; // 剛啟動或剛拖動過：量到就直接套用
 function applyTheme() {
   nativeTheme.themeSource = settings.theme === 'auto' ? (backdrop || 'system') : settings.theme;
   sendTones();
@@ -559,39 +560,45 @@ function applyTheme() {
 function sendTones() {
   if (win && !win.isDestroyed()) win.webContents.send('backdrop', settings.theme === 'auto' ? tones : {});
 }
-function judgeBackdrop() {
+// fromSample：剛量到新的畫面。背景變了（捲動、切換視窗）要連續兩次量到一樣的結果才換，
+// 避免字色和墊底跟著底下的畫面一直閃。只是極簡列的排版變了時，已經有的段落維持原樣，新段落直接判斷。
+function judgeBackdrop(fromSample = false) {
   if (!shot) return;
   const { bgra, width, height } = shot;
-  const next = { all: pickTone(regionStats(bgra, width, height), tones.all) };
-  for (const z of zones) next[z.key] = pickTone(regionStats(bgra, width, height, z.from, z.to), tones[z.key]);
+  const measure = (key, from, to) => (fromSample || !tones[key] ? pickTone(regionStats(bgra, width, height, from, to), tones[key]) : tones[key]);
+  const next = { all: measure('all', 0, 1) };
+  for (const z of zones) next[z.key] = measure(z.key, z.from, z.to);
+  const json = JSON.stringify(next);
+  if (json === JSON.stringify(tones)) { pendingTones = ''; return; }
+  if (fromSample && !settleNow && json !== pendingTones) { pendingTones = json; return; }
+  pendingTones = '';
+  settleNow = false;
   tones = next;
-  const summary = Object.entries(tones).map(([k, t]) => `${k}=${t.tone}${t.plate ? `+底${t.plate}` : ''}`).join(' ');
-  if (summary !== tonesLogged) { tonesLogged = summary; log('背景', summary); }
+  log('背景', Object.entries(tones).map(([k, t]) => `${k}=${t.tone}${t.plate ? `+底${t.plate}` : ''}`).join(' '));
   if (tones.all.tone && tones.all.tone !== backdrop) { backdrop = tones.all.tone; applyTheme(); } else sendTones();
 }
-async function sampleBackdrop() {
+async function sampleBackdrop(immediate = false) {
+  if (immediate) settleNow = true;
   if (settings.theme !== 'auto' || sampling || !win || win.isDestroyed() || !win.isVisible()) return;
   if (hovering || Date.now() - hoverChangedAt < 1500) return;
   sampling = true;
-  const hide = process.platform === 'win32';
   try {
     const b = win.getBounds();
     const d = screen.getDisplayMatching(b);
-    // 擷取的那一下先把小工具自己排除在畫面擷取之外，量到的才是背後真正的桌面，
-    // 字和墊的底也不會影響下一次判斷（畫面上看不出差別）
-    if (hide) { win.setContentProtection(true); await new Promise((r) => setTimeout(r, 80)); }
     const sources = await desktopCapturer.getSources({
       types: ['screen'],
       thumbnailSize: { width: Math.round(d.bounds.width / 4), height: Math.round(d.bounds.height / 4) },
     });
     const src = sources.find((x) => x.display_id === String(d.id)) || (sources.length === 1 ? sources[0] : null);
     if (!src || src.thumbnail.isEmpty() || hovering) return;
-    const img = src.thumbnail.crop(cropRect(b, d.bounds, src.thumbnail.getSize()));
-    const size = img.getSize();
-    shot = { bgra: img.toBitmap(), width: size.width, height: size.height };
-    judgeBackdrop();
+    // 量小工具上下緣外緊鄰的桌面（兩條接在一起）；小工具佔滿整個螢幕高度時才退回量它自己的範圍
+    const r = cropRect(b, d.bounds, src.thumbnail.getSize());
+    const parts = bandRects(r, src.thumbnail.getSize()).map((rect) => src.thumbnail.crop(rect));
+    if (!parts.length) parts.push(src.thumbnail.crop(r));
+    const sizes = parts.map((p) => p.getSize());
+    shot = { bgra: Buffer.concat(parts.map((p) => p.toBitmap())), width: sizes[0].width, height: sizes.reduce((n, z) => n + z.height, 0) };
+    judgeBackdrop(true);
   } catch { /* 擷取不到就維持現在的顏色 */ } finally {
-    if (hide && win && !win.isDestroyed()) win.setContentProtection(false);
     sampling = false;
   }
 }
@@ -686,6 +693,7 @@ function setCompact(compact) {
   win.webContents.send('mode', compact);
   applyLock(); // 鎖定只在極簡模式有效，展開後一律可以操作
   buildTrayMenu();
+  setTimeout(() => sampleBackdrop(true), 400); // 視窗大小變了，背後的範圍也變了
 }
 
 ipcMain.handle('get-state', () => state);
@@ -729,7 +737,7 @@ ipcMain.handle('save-settings', (_e, patch) => {
   saveSettings();
   if (!['auto', 'system', 'light', 'dark'].includes(settings.theme)) settings.theme = 'auto';
   applyTheme();
-  sampleBackdrop();
+  sampleBackdrop(true);
   win.setAlwaysOnTop(settings.alwaysOnTop);
   app.setLoginItemSettings({ openAtLogin: settings.openAtLogin });
   refreshAll();

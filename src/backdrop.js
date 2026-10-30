@@ -59,4 +59,16 @@ function cropRect(win, display, thumb) {
   };
 }
 
-module.exports = { regionStats, pickTone, cropRect };
+// 量小工具上緣、下緣外面緊鄰的兩條桌面（縮圖裡各 band 個像素高），不量小工具本身：
+// 這樣不會量到自己的字和墊底，也不必在擷取時把小工具藏起來（藏起來會讓它在畫面上閃一下）
+function bandRects(r, thumb, band = 3) {
+  const out = [];
+  const top = Math.max(0, r.y - band);
+  if (r.y > top) out.push({ x: r.x, y: top, width: r.width, height: r.y - top });
+  const y2 = r.y + r.height;
+  const bottom = Math.min(thumb.height, y2 + band);
+  if (bottom > y2) out.push({ x: r.x, y: y2, width: r.width, height: bottom - y2 });
+  return out;
+}
+
+module.exports = { regionStats, pickTone, cropRect, bandRects };

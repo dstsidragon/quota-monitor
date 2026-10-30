@@ -143,7 +143,7 @@ test('fetchClaudeWeb 選有 chat 的組織並讀 usage', async () => {
   await assert.rejects(fetchClaudeWeb(async () => res(403, {})), (e) => e.kind === 'web-login');
 });
 
-const { regionStats, pickTone, cropRect } = require('../src/backdrop');
+const { regionStats, pickTone, cropRect, bandRects } = require('../src/backdrop');
 
 test('背景亮度：分段判斷字色，太花才墊底', () => {
   // 一張 20×4 的截圖：左半灰藍色視窗、右半深藍桌布（使用者截圖裡的顏色）
@@ -170,6 +170,12 @@ test('背景亮度：分段判斷字色，太花才墊底', () => {
   assert.equal(pickTone(ok55, { tone: 'dark', plate: 2 }).plate, 1);
   assert.equal(pickTone({ lum: 0.1, lo: 0.1, hi: 0.1 }, { tone: 'dark', plate: 1 }).plate, 0); // 對比 7
   assert.deepEqual(pickTone(null, { tone: 'dark', plate: 0 }), { tone: 'dark', plate: 0 });
+  // 量小工具上下緣外面的兩條，不量小工具本身；貼著螢幕上緣時只有下面那條
+  assert.deepEqual(bandRects({ x: 10, y: 20, width: 100, height: 11 }, { width: 480, height: 270 }), [
+    { x: 10, y: 17, width: 100, height: 3 }, { x: 10, y: 31, width: 100, height: 3 }]);
+  assert.deepEqual(bandRects({ x: 10, y: 0, width: 100, height: 11 }, { width: 480, height: 270 }), [
+    { x: 10, y: 11, width: 100, height: 3 }]);
+  assert.deepEqual(bandRects({ x: 0, y: 0, width: 480, height: 270 }, { width: 480, height: 270 }), []);
   assert.deepEqual(
     cropRect({ x: 1900, y: 40, width: 800, height: 42 }, { x: 1920, y: 0, width: 1920, height: 1080 }, { width: 480, height: 270 }),
     { x: 0, y: 10, width: 200, height: 11 },
